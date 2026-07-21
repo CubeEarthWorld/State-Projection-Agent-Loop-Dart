@@ -254,7 +254,6 @@ Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
     config: childConfig,
     registry: childRegistry,
     embedder: parent.search.embedder,
-    summarizer: parent.summarizer,
     policy: parent.policy,
   );
   return await child.runJob(task);

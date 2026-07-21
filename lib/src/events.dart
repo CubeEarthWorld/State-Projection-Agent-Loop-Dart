@@ -36,7 +36,13 @@ const List<String> eventTypes = [
   'state_folded',
   'policy_changed',
   'branch_created',
+  'notice',
+  'observation',
+  'checkpoint',
+  'rewound',
 ];
+
+const List<String> renderableTypes = ['user_input', 'model_response', 'observation', 'notice'];
 
 class Event {
   Event({
@@ -246,5 +252,35 @@ class JsonlLedger implements EventLedger {
       ts: (d['ts'] as num).toDouble(),
       state: (d['state'] as Map).cast<String, Object?>(),
     );
+  }
+}
+
+/// Convert a renderable event into a message dict for projection.
+/// Returns null for non-renderable event types.
+Map<String, Object?>? eventToMessage(Event event) {
+  switch (event.type) {
+    case 'user_input':
+      return {'role': 'user', 'content': event.data['text'] ?? ''};
+    case 'model_response':
+      final calls = <Map<String, Object?>>[
+        for (final c in (event.data['calls'] as List? ?? []))
+          {
+            'name': (c as Map)['name'] ?? '',
+            'arguments': c['arguments'] ?? {},
+            'id': c['id'] ?? '',
+          },
+      ];
+      return {'role': 'assistant', 'content': event.data['text'] ?? '', 'tool_calls': calls};
+    case 'observation':
+      return {
+        'role': 'tool',
+        'content': event.data['text'] ?? '',
+        'tool_call_id': event.data['call_id'],
+        'name': event.data['name'],
+      };
+    case 'notice':
+      return {'role': 'system', 'content': event.data['text'] ?? ''};
+    default:
+      return null;
   }
 }

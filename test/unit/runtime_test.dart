@@ -23,7 +23,7 @@ import 'package:state_projection_loop/src/json_schema.dart' show miniValidate;
   final ledger = InMemoryLedger();
   final run = Run('run_test', 'ses_test', ledger);
   final policy = PolicyEngine(defaultDecision: allowAll ? 'allow' : 'require_approval');
-  final turn = TurnContext(config: cfg, registry: registry, conversation: [], store: store);
+  final turn = TurnContext(config: cfg, registry: registry, ledger: ledger, runId: 'run_test', store: store);
   final ctx = ToolContext(registry: registry, store: store, config: cfg, ledger: ledger, run: run);
   return (runtime, turn, ctx, run, policy);
 }

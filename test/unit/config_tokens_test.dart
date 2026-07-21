@@ -10,7 +10,7 @@ void main() {
       expect(cfg.projection.windowTokens, equals(30000));
       expect(
         cfg.projection.sections,
-        equals(['kernel', 'toc', 'conversation', 'working_state', 'candidates']),
+        equals(['kernel', 'toc', 'history', 'working_state', 'candidates']),
       );
       expect(cfg.discovery.vector, equals('auto'));
       expect(cfg.discovery.k, equals(8));
@@ -19,9 +19,9 @@ void main() {
         cfg.discovery.querySources,
         equals(['last_user_message', 'last_model_thought', 'goal_if_exists']),
       );
-      expect(cfg.compaction.triggerRatio, equals(0.8));
-      expect(cfg.compaction.model, equals('same'));
-      expect(cfg.compaction.contract, equals('v2'));
+      expect(cfg.compression.fullWindow, equals(6));
+      expect(cfg.compression.compressedWindow, equals(24));
+      expect(cfg.compression.summaryWindow, equals(60));
       expect(cfg.budget.maxSteps, equals(50));
       expect(cfg.budget.maxTokens, isNull);
       expect(cfg.artifacts.inlineThresholdTokens, equals(800));

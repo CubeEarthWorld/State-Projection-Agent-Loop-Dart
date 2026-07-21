@@ -1,41 +1,37 @@
-/// Projection pipeline: an ordered list of sections rendered into the
-/// per-turn prompt. The prompt is a minimal disposable view of truth held
-/// outside the context.
+/// Projection pipeline: renders a minimal disposable view from the Event
+/// Ledger each turn. Truth lives in the ledger; the projection is a window
+/// over it with fidelity-graded compression.
 ///
-/// Cache classes:
+/// Fidelity levels (by event age from the tail of the renderable sequence):
 ///
-/// * `fixed`    — immutable for the session (kernel; prefix-cache base)
-/// * `append`   — grows at the tail only (conversation)
-/// * `epoch`    — rarely updated; a change invalidates part of the prefix
-///   cache and is accepted explicitly (TOC, working state folds)
-/// * `volatile` — may change every turn; MUST sit at the projection tail
+/// * `full`       — verbatim (most recent events)
+/// * `compressed` — noise-stripped, head+tail truncated
+/// * `summary`    — first meaningful line + stats
+/// * (older events are simply excluded from the window)
 ///
-/// Budget accounting: the window check counts the rendered messages *plus*
-/// the native tool schemas that will accompany this request and a reserved
-/// allowance for the model's own output — not just message text. Sending
-/// schemas to the provider without counting them was how a config that
-/// looked well under budget could still blow the provider's real context
-/// window once tool definitions were attached.
+/// Budget accounting: the window check counts rendered messages *plus*
+/// native tool schemas and a reserved output allowance.
 library;
 
 import 'dart:convert';
 
 import 'capability.dart';
+import 'compression.dart';
 import 'config.dart';
 import 'discovery.dart' show ScoredTool;
+import 'events.dart';
 import 'messages.dart';
 import 'registry.dart';
 import 'tokens.dart';
 import 'working_state.dart';
-
-const List<String> cacheClasses = ['fixed', 'append', 'epoch', 'volatile'];
 
 /// Everything a section may draw on when rendering one turn.
 class TurnContext {
   TurnContext({
     required this.config,
     required this.registry,
-    required this.conversation,
+    required this.ledger,
+    required this.runId,
     WorkingState? workingState,
     List<ScoredTool>? candidates,
     this.session,
@@ -49,22 +45,19 @@ class TurnContext {
 
   final Config config;
   final Registry registry;
-  final List<Message> conversation;
+  final EventLedger ledger;
+  final String runId;
   final WorkingState workingState;
   final List<ScoredTool> candidates;
   final Object? session;
   final Object? store;
   final int step;
-  // Set by Session right before render(): the native tool schemas that will
-  // be sent alongside this projection, and whether the candidates section
-  // should therefore drop its redundant long-form description.
   List<Map<String, Object?>> apiTools;
   bool dedupeCandidateCards;
 }
 
 abstract interface class Section {
   String get name;
-  String get cacheClass;
 
   List<Message> render(TurnContext turn);
 }
@@ -79,9 +72,7 @@ const String runtimeNotes = '''[Runtime notes]
 - A tool index and auto-selected tool candidates may appear below. Call listed tools directly from their signature; if a needed tool is missing, search the registry with find_tools(query, category).
 - To finish, call finish(result) — never combine it with other tool calls in the same turn.''';
 
-/// System prompt + pinned capability specs (layer 0). Rendered once;
-/// immutable for the whole session. Pinned capabilities are captured at
-/// construction.
+/// System prompt + pinned capability specs. Immutable for the session.
 class KernelSection implements Section {
   KernelSection(String text, [List<Capability>? pinned, bool runtimeNotesEnabled = true]) {
     final parts = <String>[];
@@ -98,23 +89,18 @@ class KernelSection implements Section {
 
   @override
   final String name = 'kernel';
-  @override
-  final String cacheClass = 'fixed';
 
   @override
   List<Message> render(TurnContext turn) => List.of(_messages);
 }
 
-/// Layer-1 table of contents, its own epoch-cached section: the TOC may
-/// change mid-session without touching the kernel.
+/// Layer-1 table of contents. Rebuilds when the registry epoch changes.
 class TocSection implements Section {
   int _cachedEpoch = -1;
   List<Message> _cached = [];
 
   @override
   final String name = 'toc';
-  @override
-  final String cacheClass = 'epoch';
 
   @override
   List<Message> render(TurnContext turn) {
@@ -137,23 +123,67 @@ class TocSection implements Section {
   }
 }
 
-/// The recent transcript, verbatim (append-only).
-class ConversationSection implements Section {
+/// Derives conversation messages from the Event Ledger with fidelity-graded
+/// compression. Replaces the old ConversationSection + Compactor.
+class HistorySection implements Section {
   @override
-  final String name = 'conversation';
-  @override
-  final String cacheClass = 'append';
+  final String name = 'history';
 
   @override
-  List<Message> render(TurnContext turn) => List.of(turn.conversation);
+  List<Message> render(TurnContext turn) {
+    final cfg = turn.config.compression;
+    final events = turn.ledger
+        .iterRun(turn.runId)
+        .where((e) => renderableTypes.contains(e.type))
+        .toList();
+    if (events.isEmpty) return [];
+
+    final n = events.length;
+    final messages = <Message>[];
+    for (var i = 0; i < n; i++) {
+      final event = events[i];
+      final age = n - 1 - i;
+      final msgDict = eventToMessage(event);
+      if (msgDict == null) continue;
+      var content = (msgDict['content'] ?? '').toString();
+      if (content.isNotEmpty) {
+        if (age < cfg.fullWindow) {
+          // verbatim
+        } else if (age < cfg.compressedWindow) {
+          if (msgDict['role'] == kObservation) {
+            content = compressObservation(content, maxLines: cfg.observationMaxLines);
+          } else {
+            content = compressText(content, maxLines: cfg.compressedMaxLines);
+          }
+        } else if (age < cfg.summaryWindow) {
+          content = summarizeText(content);
+        } else {
+          continue;
+        }
+      }
+      messages.add(Message(
+        role: msgDict['role'] as String,
+        content: content,
+        toolCallId: msgDict['tool_call_id'] as String?,
+        name: msgDict['name'] as String?,
+        toolCalls: [
+          for (final tc in (msgDict['tool_calls'] as List? ?? []))
+            ToolCall(
+              name: (tc as Map)['name']?.toString() ?? '',
+              arguments: (tc['arguments'] as Map?)?.cast<String, Object?>() ?? {},
+              id: tc['id']?.toString() ?? '',
+            ),
+        ],
+      ));
+    }
+    return messages;
+  }
 }
 
-/// Layer-2 auto-injected tool cards. Volatile; always at the tail.
+/// Layer-2 auto-injected tool cards. Always at the tail.
 class CandidatesSection implements Section {
   @override
   final String name = 'candidates';
-  @override
-  final String cacheClass = 'volatile';
 
   @override
   List<Message> render(TurnContext turn) {
@@ -161,8 +191,6 @@ class CandidatesSection implements Section {
     List<String> lines;
     String header;
     if (turn.dedupeCandidateCards && turn.apiTools.isNotEmpty) {
-      // Full description already travels in the native tool schema;
-      // repeating it here would just double the token cost.
       lines = [
         for (final s in turn.candidates)
           s.tool.card.signature.isNotEmpty ? s.tool.card.signature : s.tool.name,
@@ -189,28 +217,10 @@ class ProjectionError implements Exception {
 }
 
 class Projection {
-  Projection(List<Section> sections, {this.windowTokens = 30000}) : sections = List.of(sections) {
-    _validate();
-  }
+  Projection(List<Section> sections, {this.windowTokens = 30000}) : sections = List.of(sections);
 
   List<Section> sections;
   final int windowTokens;
-
-  void _validate() {
-    var seenVolatile = false;
-    for (final sec in sections) {
-      if (!cacheClasses.contains(sec.cacheClass)) {
-        throw ProjectionError('Section "${sec.name}": unknown cache_class "${sec.cacheClass}"');
-      }
-      if (sec.cacheClass == 'volatile') {
-        seenVolatile = true;
-      } else if (seenVolatile) {
-        throw ProjectionError(
-            'Invariant violated: non-volatile section "${sec.name}" appears after a volatile '
-            'section; volatile sections must be last');
-      }
-    }
-  }
 
   Section? get(String name) {
     for (final sec in sections) {
@@ -223,12 +233,10 @@ class Projection {
     for (var i = 0; i < sections.length; i++) {
       if (sections[i].name == name) {
         sections.insert(i, section);
-        _validate();
         return;
       }
     }
     sections.add(section);
-    _validate();
   }
 
   int schemaTokens(List<Map<String, Object?>> apiTools) {
@@ -236,15 +244,6 @@ class Projection {
     return estimateTokens(jsonEncode(apiTools));
   }
 
-  /// Render all sections and enforce the window budget.
-  ///
-  /// The budget includes the native tool schemas that will accompany this
-  /// request and a reserved allowance for the model's output — not just the
-  /// rendered message text. Reduction order on overflow: shrink candidates
-  /// first, then fold the old side of the conversation. LLM-based folding
-  /// is the session's job *before* rendering; the trim here is a
-  /// deterministic last resort so the window invariant can never be
-  /// violated.
   List<Message> render(
     TurnContext turn, {
     List<Map<String, Object?>>? apiTools,
@@ -260,32 +259,26 @@ class Projection {
     int total() =>
         fixedOverhead + rendered.fold<int>(0, (sum, e) => sum + estimateTokens(e.$2));
 
-    // 1) shrink candidates
     while (total() > windowTokens && turn.candidates.isNotEmpty) {
       turn.candidates.removeLast();
       rendered = [
         for (final e in rendered)
-          (e.$1, e.$1.cacheClass == 'volatile' ? e.$1.render(turn) : e.$2),
+          (e.$1, e.$1.name == 'candidates' ? e.$1.render(turn) : e.$2),
       ];
     }
 
-    // 2) emergency-trim the oldest conversation messages from the view
     if (total() > windowTokens) {
-      final note = Message(
-        role: kSystem,
-        content: '[…older conversation trimmed to fit the window; see working state / search_history]',
-      );
       for (var idx = 0; idx < rendered.length; idx++) {
         final (sec, msgs) = rendered[idx];
-        if (sec.cacheClass != 'append' || msgs.isEmpty) continue;
+        if (sec.name != 'history' || msgs.isEmpty) continue;
         final trimmed = List<Message>.of(msgs);
         while (trimmed.isNotEmpty && total() > windowTokens) {
           trimmed.removeAt(0);
           while (trimmed.isNotEmpty && trimmed.first.role == kObservation) {
             trimmed.removeAt(0);
           }
-          rendered[idx] = (sec, trimmed.isNotEmpty ? [note, ...trimmed] : <Message>[]);
         }
+        rendered[idx] = (sec, trimmed);
         break;
       }
     }
@@ -310,7 +303,7 @@ List<Section> buildDefaultSections(
     'kernel': () => KernelSection(kernelText, pinned),
     'toc': () => TocSection(),
     'working_state': () => _WorkingStateSectionAdapter(WorkingStateSection()),
-    'conversation': () => ConversationSection(),
+    'history': () => HistorySection(),
     'candidates': () => CandidatesSection(),
   };
   final sections = <Section>[];
@@ -326,9 +319,6 @@ List<Section> buildDefaultSections(
   return sections;
 }
 
-/// Adapts [WorkingStateSection] (defined in `working_state.dart`, which has
-/// no dependency on this library to avoid an import cycle) to the [Section]
-/// interface declared here.
 class _WorkingStateSectionAdapter implements Section {
   _WorkingStateSectionAdapter(this._inner);
 
@@ -336,8 +326,6 @@ class _WorkingStateSectionAdapter implements Section {
 
   @override
   String get name => _inner.name;
-  @override
-  String get cacheClass => _inner.cacheClass;
 
   @override
   List<Message> render(TurnContext turn) => _inner.render(turn);

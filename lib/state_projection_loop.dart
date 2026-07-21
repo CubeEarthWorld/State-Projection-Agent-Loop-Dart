@@ -2,8 +2,8 @@
 ///
 /// Truth lives in the append-only Event Ledger, never in the model's
 /// context; every turn renders a minimal disposable Projection derived from
-/// it. The loop: Project → Decide → Validate → Plan Effects → Authorize →
-/// Execute → Record → Continue/Wait/Complete.
+/// it with fidelity-graded compression. The loop: Project → Decide →
+/// Validate → Authorize → Execute → Record → Continue/Wait/Complete.
 library;
 
 export 'src/artifacts.dart' show ArtifactStore, ArtifactRecord, ref, isRef, refKey;
@@ -25,20 +25,22 @@ export 'src/capability.dart'
         effectKinds,
         retrySafetyKinds,
         concurrencyPolicies;
-export 'src/compaction.dart' show Compactor, contractV2, deterministicFold, renderTranscript;
+export 'src/compression.dart'
+    show compressText, compressObservation, summarizeText, contentHash, stripNoise, headTailTruncate;
 export 'src/config.dart'
     show
         Config,
         ProjectionConfig,
         DiscoveryConfig,
-        CompactionConfig,
+        CompressionConfig,
         BudgetConfig,
         ArtifactsConfig,
         LimitsConfig,
         PersistenceConfig;
 export 'src/discovery.dart' show ScoredTool, ToolSearch, tokenize;
 export 'src/embeddings.dart' show EmbeddingBackend, HashingEmbedding, Vector, cosine;
-export 'src/events.dart' show Event, EventLedger, InMemoryLedger, JsonlLedger, Snapshot, eventTypes;
+export 'src/events.dart'
+    show Event, EventLedger, InMemoryLedger, JsonlLedger, Snapshot, eventTypes, renderableTypes, eventToMessage;
 export 'src/ids.dart' show newId, newUlid, kindOf;
 export 'src/llm.dart'
     show
@@ -73,10 +75,9 @@ export 'src/projection.dart'
         TurnContext,
         KernelSection,
         TocSection,
-        ConversationSection,
+        HistorySection,
         CandidatesSection,
-        buildDefaultSections,
-        cacheClasses;
+        buildDefaultSections;
 export 'src/registry.dart' show Registry, ToolProvider;
 export 'src/run.dart'
     show Run, RunStateError, Command, ApprovalRequest, runStates, terminalStates, commandOutcomes;
@@ -93,4 +94,4 @@ export 'src/session.dart' show Session, ConcurrencyError;
 export 'src/tokens.dart' show estimateTokens, estimateTextTokens, setEstimator, resetEstimator;
 export 'src/working_state.dart' show WorkingState, WorkingStateSection, RecordedDecision;
 
-const String packageVersion = '0.2.0';
+const String packageVersion = '0.3.0';

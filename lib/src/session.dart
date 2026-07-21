@@ -3,21 +3,9 @@
 ///
 /// [Session] is the conversation container; [Run] (`session.run`) is the
 /// unit of resumable execution it drives. Everything the model sees each
-/// turn is re-projected from the Event Ledger's derived state (working
-/// state + conversation), never accumulated ad hoc.
-///
-/// Two correctness properties enforced here that a naive loop gets wrong:
-///
-/// * Completion (`Decision.finish`) is validated *before* any
-///   side-effecting call in the same decision executes; a decision that
-///   mixes the two is rejected outright, never partially honored.
-/// * At most one in-flight turn per session. A second concurrent [send]/
-///   [runJob] call raises [ConcurrencyError] immediately instead of
-///   interleaving state.
-///
-/// Unlike the Python original (which exposes sync `send`/`asend` pairs
-/// wrapping `asyncio.run`), this port has one async API surface — Dart has
-/// no equivalent of blocking on an event loop from within one.
+/// turn is re-projected from the Event Ledger with fidelity-graded
+/// compression — there is no separately maintained conversation list. The
+/// ledger IS the truth; the projection is a disposable window over it.
 library;
 
 import 'dart:collection';
@@ -26,7 +14,6 @@ import 'dart:io';
 import 'artifacts.dart';
 import 'builtin/meta.dart' show ensureMetaTools;
 import 'capability.dart';
-import 'compaction.dart';
 import 'config.dart';
 import 'discovery.dart';
 import 'embeddings.dart';
@@ -44,9 +31,6 @@ import 'working_state.dart';
 
 const int _activeToolCap = 48;
 
-/// Raised when a second turn is attempted on a session with one already in
-/// flight. Sessions are single-writer by design; run concurrent
-/// conversations as separate Sessions.
 class ConcurrencyError implements Exception {
   ConcurrencyError(this.message);
   final String message;
@@ -62,7 +46,6 @@ EventLedger _makeLedger(Config config) {
   return InMemoryLedger();
 }
 
-/// Sentinel: the loop should keep going.
 class _Continue {
   const _Continue();
 }
@@ -82,7 +65,6 @@ class Session {
     EmbeddingBackend? embedder,
     List<Section>? sections,
     Map<String, Section>? extraSections,
-    this.summarizer,
     this.spawnLlmFactory,
     EventLedger? ledger,
   })  : config = config ?? Config(),
@@ -110,15 +92,13 @@ class Session {
         );
     projection = Projection(sectionList, windowTokens: this.config.projection.windowTokens);
     runtime = Runtime(this.registry, store, this.config);
-    runtime.seenSpecs.addAll(pinned.map((c) => c.name)); // kernel carries their specs
-    compactor = Compactor(this.config, summarizer: _resolveSummarizer());
+    runtime.seenSpecs.addAll(pinned.map((c) => c.name));
 
     workingState = WorkingState();
     for (final entry in (seed ?? {}).entries) {
       _seedWorkingState(entry.key, entry.value);
     }
 
-    conversation = [];
     budget = BudgetState();
 
     _active = LinkedHashSet<String>.from(pinned.map((c) => c.name));
@@ -127,7 +107,6 @@ class Session {
   }
 
   final LLMAdapter llm;
-  final LLMAdapter? summarizer;
   final SpawnLlmFactory? spawnLlmFactory;
   final Config config;
   final Registry registry;
@@ -140,9 +119,7 @@ class Session {
   late String _kernelText;
   late final Projection projection;
   late final Runtime runtime;
-  late final Compactor compactor;
   late WorkingState workingState;
-  late List<Message> conversation;
   late BudgetState budget;
   late final LinkedHashSet<String> _active;
   bool _interrupted = false;
@@ -180,45 +157,54 @@ class Session {
   }
 
   static PolicyEngine _defaultPolicy() {
-    // Out-of-the-box posture: effect-free calls (state/meta tools) and
-    // workspace reads run automatically; everything else — including any
-    // custom capability with a write/external effect — requires an
-    // explicit grant or approval. Callers building a real deployment are
-    // expected to pass their own PolicyEngine.
     final engine = PolicyEngine(defaultDecision: 'require_approval');
     engine.applyPreset('auto_safe');
     return engine;
   }
 
-  LLMAdapter? _resolveSummarizer() {
-    if (summarizer != null) return summarizer;
-    if (config.compaction.model == 'none') return null;
-    return llm;
-  }
-
   // -- public API -------------------------------------------------------------
 
-  /// Chat mode: one user message in, the final text reply (or a pending
-  /// [ApprovalRequest]) out.
+  /// Derived view of renderable ledger events as Messages. Read-only;
+  /// the ledger is the source of truth, this is a convenience accessor.
+  List<Message> get conversation {
+    final msgs = <Message>[];
+    for (final event in ledger.iterRun(run.id)) {
+      final msgDict = eventToMessage(event);
+      if (msgDict == null) continue;
+      msgs.add(Message(
+        role: msgDict['role'] as String,
+        content: msgDict['content'] ?? '',
+        toolCallId: msgDict['tool_call_id'] as String?,
+        name: msgDict['name'] as String?,
+        toolCalls: [
+          for (final tc in (msgDict['tool_calls'] as List? ?? []))
+            ToolCall(
+              name: (tc as Map)['name']?.toString() ?? '',
+              arguments: (tc['arguments'] as Map?)?.cast<String, Object?>() ?? {},
+              id: tc['id']?.toString() ?? '',
+            ),
+        ],
+      ));
+    }
+    return msgs;
+  }
+
   Future<Object?> send(String text) async {
     return _guarded(() async {
-      conversation.add(Message(role: kUser, content: text));
       ledger.append(run.id, 'user_input', {'text': text});
+      _checkpoint();
       return await _loop();
     });
   }
 
-  /// Job mode: run until finish(result), budget exhaustion, interrupt, or
-  /// an approval pause.
   Future<Object?> runJob(String task) async {
     return _guarded(() async {
-      conversation.add(Message(role: kUser, content: task));
       ledger.append(run.id, 'user_input', {'text': task});
+      _checkpoint();
       return await _loop();
     });
   }
 
-  /// Request the loop to stop at the next iteration boundary.
   void interrupt() {
     _interrupted = true;
   }
@@ -229,14 +215,10 @@ class Session {
 
   // -- approval lifecycle -------------------------------------------------
 
-  /// Approve or deny the run's pending approval. Does not resume execution
-  /// — call [resume] afterward.
   ApprovalRequest resolveApproval(String decision) {
     return run.resolveApproval(decision, currentPolicyRevision: policy.revision);
   }
 
-  /// Continue a run paused at `WAITING_FOR_APPROVAL` (now resolved) or
-  /// freshly reconstructed via [Session.resumeFromLedger].
   Future<Object?> resume() async {
     return _guarded(() async {
       if (run.state != 'RUNNING') {
@@ -251,15 +233,14 @@ class Session {
     });
   }
 
-  // -- direct invocation (bypasses the model, still goes through the same
-  //    validate/authorize/execute/record pipeline) -------------------------
+  // -- direct invocation ---------------------------------------------------
 
   Future<Object?> invoke(String capabilityName, [Map<String, Object?>? arguments]) async {
     return _guarded(() async {
       final turn = _newTurn();
       final call = ToolCall(name: capabilityName, arguments: arguments ?? {});
       final batch = await runtime.execute([call], turn, _toolContext(), run, policy);
-      _applyBatch(batch, recordConversation: false);
+      _applyBatch(batch, record: false);
       _snapshot();
       if (batch.halted) return run.pendingApproval;
       final result = batch.results[0];
@@ -272,30 +253,27 @@ class Session {
     });
   }
 
-  // -- branching (non-destructive rewind) ----------------------------------
+  // -- branching -------------------------------------------------------------
 
-  /// Create a new Session sharing history up to [atMessage] (default:
-  /// current end). The parent's ledger is never modified or truncated —
-  /// this only ever adds a new run whose own ledger starts with a
-  /// `branch_created` event pointing at the parent.
-  ///
-  /// Returns `(newSession, irreversibleEffects)` where the second element
-  /// lists external effects already committed by the parent run that this
-  /// branch cannot undo (e.g. a sent email, a git push).
   (Session, List<String>) branch({int? atMessage}) {
-    final cut = atMessage ?? conversation.length;
     final newSession = Session(
       llm,
       kernel: _kernelText,
       config: Config.fromMap(config.toMap()),
       registry: registry,
       embedder: search.embedder,
-      summarizer: summarizer,
       spawnLlmFactory: spawnLlmFactory,
       policy: policy,
     );
-    newSession.conversation = List.of(conversation.take(cut));
     newSession.workingState = WorkingState.fromDict(workingState.toDict());
+    final renderable = ledger
+        .iterRun(run.id)
+        .where((e) => renderableTypes.contains(e.type))
+        .toList();
+    final cut = atMessage ?? renderable.length;
+    for (final event in renderable.take(cut)) {
+      newSession.ledger.append(newSession.run.id, event.type, Map.of(event.data));
+    }
     newSession.ledger.append(newSession.run.id, 'branch_created', {
       'parent_run_id': run.id,
       'parent_session_id': sessionId,
@@ -310,8 +288,9 @@ class Session {
       if (event.type != 'command_completed') continue;
       final command = run.commands[event.data['command_id']];
       if (command == null) continue;
-      final capabilityName = command.capabilityName.substring(
-          0, command.capabilityName.contains('@') ? command.capabilityName.lastIndexOf('@') : command.capabilityName.length);
+      final capabilityName = command.capabilityName.contains('@')
+          ? command.capabilityName.substring(0, command.capabilityName.lastIndexOf('@'))
+          : command.capabilityName;
       final capability = registry.get(capabilityName);
       if (capability != null && capability.effects.any((e) => e.kind == 'external')) {
         notices.add(
@@ -323,12 +302,6 @@ class Session {
 
   // -- process-restart resume ------------------------------------------------
 
-  /// Reconstruct a Session from its last snapshot in a NEW process.
-  ///
-  /// This is what makes a `WAITING_FOR_APPROVAL` run survive a process
-  /// restart: the caller (a new process, possibly hours later) loads the
-  /// ledger directory, finds the snapshot, and gets back a Session ready
-  /// for [resolveApproval] + [resume].
   static Session resumeFromLedger(
     LLMAdapter llm,
     String runId, {
@@ -336,7 +309,6 @@ class Session {
     Registry? registry,
     PolicyEngine? policy,
     EmbeddingBackend? embedder,
-    LLMAdapter? summarizer,
     SpawnLlmFactory? spawnLlmFactory,
   }) {
     final cfg = config ?? Config();
@@ -355,7 +327,6 @@ class Session {
       registry: registry,
       policy: policy,
       embedder: embedder,
-      summarizer: summarizer,
       spawnLlmFactory: spawnLlmFactory,
       ledger: ledger,
     );
@@ -363,10 +334,6 @@ class Session {
     session.sessionId = (snapshot.state['session_id'] as String?) ?? session.sessionId;
     session.workingState =
         WorkingState.fromDict((snapshot.state['working_state'] as Map?)?.cast<String, Object?>() ?? {});
-    session.conversation = [
-      for (final d in (snapshot.state['conversation'] as List? ?? []))
-        Message.fromDict((d as Map).cast<String, Object?>()),
-    ];
     final budgetData = (snapshot.state['budget'] as Map?)?.cast<String, Object?>() ?? {};
     session.budget = BudgetState(
       steps: (budgetData['steps'] as num?)?.toInt() ?? 0,
@@ -385,7 +352,6 @@ class Session {
     final state = <String, Object?>{
       'session_id': sessionId,
       'working_state': workingState.toDict(),
-      'conversation': [for (final m in conversation) m.toDict()],
       'budget': {
         'steps': budget.steps,
         'prompt_tokens': budget.promptTokens,
@@ -436,8 +402,6 @@ class Session {
         return budgetValue;
       }
 
-      await _maybeCompact();
-
       final turn = _newTurn();
       final apiTools = _apiTools(turn);
       turn.dedupeCandidateCards = config.projection.dedupeCandidateCardsAgainstSchemas;
@@ -465,13 +429,10 @@ class Session {
       ledger.append(run.id, 'model_response', {
         'text': decision.text.length > 2000 ? decision.text.substring(0, 2000) : decision.text,
         'finish': decision.finish,
-        'calls': [for (final c in resolvedCalls) {'name': c.name, 'arguments': c.arguments}],
+        'calls': [for (final c in resolvedCalls) {'name': c.name, 'arguments': c.arguments, 'id': c.id}],
       });
 
-      conversation.add(Message(role: kAssistant, content: decision.text, toolCalls: resolvedCalls));
-
       if (decision.finish && resolvedCalls.isNotEmpty) {
-        // Reject outright, execute nothing.
         ledger.append(run.id, 'decision_validated',
             {'ok': false, 'reason': 'finish combined with tool calls in the same decision'});
         for (final call in resolvedCalls) {
@@ -492,9 +453,6 @@ class Session {
           _snapshot();
           return run.result;
         }
-        // Chat mode: finish() is just an alternate way to answer this turn
-        // — the run itself stays RUNNING so the conversation can continue
-        // with the next send().
         return decision.result ?? decision.text;
       }
 
@@ -516,9 +474,9 @@ class Session {
     }
   }
 
-  void _applyBatch(ExecuteBatchResult batch, {bool recordConversation = true}) {
+  void _applyBatch(ExecuteBatchResult batch, {bool record = true}) {
     for (final result in batch.results) {
-      if (recordConversation) {
+      if (record) {
         _observe(result.call.id, result.call.name, result.observation);
       }
       if (result.ok) {
@@ -529,9 +487,6 @@ class Session {
 
   // -- loop helpers -----------------------------------------------------------
 
-  /// On overrun, grant exactly one grace turn to wrap up, then stop
-  /// deterministically. Returns `(true, value)` when the loop must stop
-  /// and return `value`; `(false, null)` to keep going.
   (bool, Object?) _enforceBudget() {
     final reason = budget.exceeded(config);
     if (reason == null) return (false, null);
@@ -551,21 +506,12 @@ class Session {
     return (true, text.isNotEmpty ? text : '[budget exhausted]');
   }
 
-  Future<void> _maybeCompact() async {
-    final window = config.projection.windowTokens;
-    if (!compactor.shouldCompact(conversation, window)) return;
-    final (folded, remaining) = await compactor.fold(conversation, workingState);
-    if (folded) {
-      conversation = remaining;
-      ledger.append(run.id, 'state_folded', {'working_state': workingState.toDict()});
-    }
-  }
-
   TurnContext _newTurn() {
     final turn = TurnContext(
       config: config,
       registry: registry,
-      conversation: conversation,
+      ledger: ledger,
+      runId: run.id,
       workingState: workingState,
       session: this,
       store: store,
@@ -597,16 +543,22 @@ class Session {
   }
 
   String _lastText(String role) {
-    for (final message in conversation.reversed) {
-      if (message.role == role && message.text().isNotEmpty) return message.text();
+    final events = ledger
+        .iterRun(run.id)
+        .where((e) => renderableTypes.contains(e.type))
+        .toList();
+    for (final event in events.reversed) {
+      final msgDict = eventToMessage(event);
+      if (msgDict != null && msgDict['role'] == role) {
+        final content = (msgDict['content'] ?? '').toString();
+        if (content.isNotEmpty) return content;
+      }
     }
     return '';
   }
 
   String _lastAssistantText() => _lastText(kAssistant);
 
-  /// Native tool schemas for this turn: pinned + candidates + recently
-  /// activated. Bounded, so tool schemas never approach O(N).
   List<Map<String, Object?>> _apiTools(TurnContext turn) {
     final names = <String>{};
     for (final capability in registry.pinned()) {
@@ -621,9 +573,6 @@ class Session {
         if (registry.contains(n)) registry.get(n)!.apiSchema(),
     ];
     if (config.mode == 'job') {
-      // finish() is not a registered Capability — it's the formal
-      // completion signal handled directly by the loop — but native
-      // tool-calling providers still need its schema to offer it.
       schemas.add(finishSchema);
     }
     return schemas;
@@ -631,7 +580,7 @@ class Session {
 
   void _activate(String name) {
     _active.remove(name);
-    _active.add(name); // re-insert at the end (LinkedHashSet preserves insertion order)
+    _active.add(name);
     final pinnedNames = registry.pinned().map((c) => c.name).toSet();
     while (_active.length > _activeToolCap) {
       String? toRemove;
@@ -646,11 +595,6 @@ class Session {
     }
   }
 
-  /// Public because resident meta tools (e.g. `find_tools`) call back into
-  /// the session to mark newly-discovered tools active. Python reaches
-  /// this via `ctx.session._activate_tools`; Dart's per-library privacy
-  /// means the equivalent must be public since `builtin/meta.dart` is a
-  /// separate library.
   void activateTools(List<String> names) {
     for (final name in names) {
       _activate(name);
@@ -670,13 +614,102 @@ class Session {
     return _continue;
   }
 
-  /// Append a tool observation — structurally distinct role.
   void _observe(String callId, String name, String text) {
-    conversation.add(Message(role: kObservation, content: text, toolCallId: callId, name: name));
+    ledger.append(run.id, 'observation', {'call_id': callId, 'name': name, 'text': text});
   }
 
   void _notice(String text) {
-    conversation.add(Message(role: kSystem, content: text));
+    ledger.append(run.id, 'notice', {'text': text});
+  }
+
+  void _checkpoint() {
+    ledger.append(run.id, 'checkpoint', {'working_state': workingState.toDict()});
+  }
+
+  /// Destructive rewind: cancel the current run and replace it in-place with
+  /// a new run containing only events up to [toTurn] (counted in user-input
+  /// turns, 0-indexed). The session continues as if everything after that
+  /// turn never happened.
+  ///
+  /// Returns a list of irreversible external effects that already executed
+  /// and cannot be undone.
+  List<String> rewind({required int toTurn}) {
+    final irreversible = _irreversibleEffectsUpTo(toTurn);
+    final allEvents = ledger.iterRun(run.id).toList();
+    final renderable = allEvents.where((e) => renderableTypes.contains(e.type)).toList();
+
+    var userTurnsSeen = 0;
+    var cutIndex = renderable.length;
+    for (var i = 0; i < renderable.length; i++) {
+      if (renderable[i].type == 'user_input') {
+        if (userTurnsSeen == toTurn) {
+          cutIndex = i;
+          break;
+        }
+        userTurnsSeen++;
+      }
+    }
+    final keptRenderable = renderable.sublist(0, cutIndex);
+
+    var restoredWs = WorkingState();
+    var userCount = 0;
+    var lookingForCheckpoint = false;
+    for (final event in allEvents) {
+      if (event.type == 'user_input') {
+        if (userCount == toTurn) lookingForCheckpoint = true;
+        userCount++;
+      } else if (event.type == 'checkpoint' && lookingForCheckpoint) {
+        restoredWs = WorkingState.fromDict(
+            (event.data['working_state'] as Map?)?.cast<String, Object?>() ?? {});
+        break;
+      }
+    }
+
+    final oldRunId = run.id;
+    ledger.append(oldRunId, 'rewound', {'to_turn': toTurn, 'kept_messages': keptRenderable.length});
+    if (!['COMPLETED', 'FAILED', 'CANCELLED'].contains(run.state)) {
+      run.cancel('rewound to turn $toTurn');
+    }
+
+    run = Run(newId('run'), sessionId, ledger);
+    for (final event in keptRenderable) {
+      ledger.append(run.id, event.type, Map.of(event.data));
+    }
+    ledger.append(run.id, 'checkpoint', {'working_state': restoredWs.toDict()});
+
+    workingState = restoredWs;
+    budget = BudgetState();
+    _idleTurns = 0;
+    _budgetGraceUsed = false;
+    _active.clear();
+    _active.addAll(registry.pinned().map((c) => c.name));
+    runtime.seenSpecs.clear();
+    runtime.seenSpecs.addAll(registry.pinned().map((c) => c.name));
+
+    return irreversible;
+  }
+
+  List<String> _irreversibleEffectsUpTo(int toTurn) {
+    final notices = <String>[];
+    var userCount = 0;
+    for (final event in ledger.iterRun(run.id)) {
+      if (event.type == 'user_input') {
+        if (userCount >= toTurn) break;
+        userCount++;
+      }
+      if (event.type != 'command_completed') continue;
+      final command = run.commands[event.data['command_id']];
+      if (command == null) continue;
+      final capabilityName = command.capabilityName.contains('@')
+          ? command.capabilityName.substring(0, command.capabilityName.lastIndexOf('@'))
+          : command.capabilityName;
+      final capability = registry.get(capabilityName);
+      if (capability != null && capability.effects.any((e) => e.kind == 'external')) {
+        notices.add(
+            '${capability.qualifiedName} (command ${command.id}) already ran and cannot be undone');
+      }
+    }
+    return notices;
   }
 
   void _noteUsage(Decision decision, List<Message> messages) {

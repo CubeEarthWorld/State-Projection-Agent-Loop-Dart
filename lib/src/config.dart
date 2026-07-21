@@ -12,7 +12,7 @@ class ProjectionConfig {
     this.providerOverheadTokens = 0,
     this.dedupeCandidateCardsAgainstSchemas = true,
   }) : sections =
-            sections ?? ['kernel', 'toc', 'conversation', 'working_state', 'candidates'];
+            sections ?? ['kernel', 'toc', 'history', 'working_state', 'candidates'];
 
   // "toc" is a separate epoch-cached section: the kernel stays immutable
   // while the tool index may change mid-session.
@@ -63,24 +63,27 @@ class DiscoveryConfig {
       };
 }
 
-class CompactionConfig {
-  CompactionConfig({
-    this.triggerRatio = 0.8,
-    this.model = 'same', // "same" | "none" (deterministic fallback) | model name
-    this.contract = 'v2',
-    this.maxSummaryRatio = 0.1, // legacy free-text fallback cap, used only when model="none"
+class CompressionConfig {
+  CompressionConfig({
+    this.fullWindow = 6,
+    this.compressedWindow = 24,
+    this.summaryWindow = 60,
+    this.compressedMaxLines = 80,
+    this.observationMaxLines = 40,
   });
 
-  double triggerRatio;
-  String model;
-  String contract;
-  double maxSummaryRatio;
+  int fullWindow;
+  int compressedWindow;
+  int summaryWindow;
+  int compressedMaxLines;
+  int observationMaxLines;
 
   Map<String, Object?> toMap() => {
-        'trigger_ratio': triggerRatio,
-        'model': model,
-        'contract': contract,
-        'max_summary_ratio': maxSummaryRatio,
+        'full_window': fullWindow,
+        'compressed_window': compressedWindow,
+        'summary_window': summaryWindow,
+        'compressed_max_lines': compressedMaxLines,
+        'observation_max_lines': observationMaxLines,
       };
 }
 
@@ -175,14 +178,14 @@ class Config {
     this.mode = 'chat', // "chat" | "job"
     ProjectionConfig? projection,
     DiscoveryConfig? discovery,
-    CompactionConfig? compaction,
+    CompressionConfig? compression,
     BudgetConfig? budget,
     ArtifactsConfig? artifacts,
     LimitsConfig? limits,
     PersistenceConfig? persistence,
   })  : projection = projection ?? ProjectionConfig(),
         discovery = discovery ?? DiscoveryConfig(),
-        compaction = compaction ?? CompactionConfig(),
+        compression = compression ?? CompressionConfig(),
         budget = budget ?? BudgetConfig(),
         artifacts = artifacts ?? ArtifactsConfig(),
         limits = limits ?? LimitsConfig(),
@@ -191,7 +194,7 @@ class Config {
   String mode;
   final ProjectionConfig projection;
   final DiscoveryConfig discovery;
-  final CompactionConfig compaction;
+  final CompressionConfig compression;
   final BudgetConfig budget;
   final ArtifactsConfig artifacts;
   final LimitsConfig limits;
@@ -201,7 +204,7 @@ class Config {
     'mode',
     'projection',
     'discovery',
-    'compaction',
+    'compression',
     'budget',
     'artifacts',
     'limits',
@@ -238,13 +241,13 @@ class Config {
             'query_sources': (v) =>
                 cfg.discovery.querySources = (v as List).cast<String>(),
           });
-        case 'compaction':
-          _applySub(cfg.compaction, value, key, {
-            'trigger_ratio': (v) => cfg.compaction.triggerRatio = (v as num).toDouble(),
-            'model': (v) => cfg.compaction.model = v as String,
-            'contract': (v) => cfg.compaction.contract = v as String,
-            'max_summary_ratio': (v) =>
-                cfg.compaction.maxSummaryRatio = (v as num).toDouble(),
+        case 'compression':
+          _applySub(cfg.compression, value, key, {
+            'full_window': (v) => cfg.compression.fullWindow = (v as num).toInt(),
+            'compressed_window': (v) => cfg.compression.compressedWindow = (v as num).toInt(),
+            'summary_window': (v) => cfg.compression.summaryWindow = (v as num).toInt(),
+            'compressed_max_lines': (v) => cfg.compression.compressedMaxLines = (v as num).toInt(),
+            'observation_max_lines': (v) => cfg.compression.observationMaxLines = (v as num).toInt(),
           });
         case 'budget':
           _applySub(cfg.budget, value, key, {
@@ -299,7 +302,7 @@ class Config {
         'mode': mode,
         'projection': projection.toMap(),
         'discovery': discovery.toMap(),
-        'compaction': compaction.toMap(),
+        'compression': compression.toMap(),
         'budget': budget.toMap(),
         'artifacts': artifacts.toMap(),
         'limits': limits.toMap(),

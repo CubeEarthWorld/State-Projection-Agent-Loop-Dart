@@ -107,44 +107,6 @@ class WorkingState {
         extra: (d['extra'] as Map?)?.cast<String, Object?>() ?? {},
       );
 
-  /// Apply a compaction-contract-v2 delta (see `compaction.dart`): additive
-  /// for facts/decisions/artifact_refs, replace-if-present for goal, and
-  /// add/remove for open_questions.
-  void mergeFold(Map<String, Object?> delta) {
-    final goalVal = delta['goal'];
-    if (goalVal != null && goalVal.toString().isNotEmpty) {
-      goal = goalVal.toString();
-    }
-    for (final entry in {
-      'acceptance_criteria': acceptanceCriteria,
-      'constraints': constraints,
-    }.entries) {
-      for (final item in (delta[entry.key] as List? ?? [])) {
-        if (!entry.value.contains(item)) entry.value.add(item as String);
-      }
-    }
-    for (final fact in (delta['new_facts'] as List? ?? [])) {
-      if (!confirmedFacts.contains(fact)) confirmedFacts.add(fact as String);
-    }
-    for (final d in (delta['new_decisions'] as List? ?? [])) {
-      if (d is Map) {
-        decisions.add(RecordedDecision.fromDict(d.cast<String, Object?>()));
-      }
-    }
-    for (final q in (delta['new_open_questions'] as List? ?? [])) {
-      if (!openQuestions.contains(q)) openQuestions.add(q as String);
-    }
-    for (final q in (delta['resolved_open_questions'] as List? ?? [])) {
-      openQuestions = openQuestions.where((x) => x != q).toList();
-    }
-    if (delta.containsKey('next_actions') && delta['next_actions'] != null) {
-      nextActions = (delta['next_actions'] as List).cast<String>();
-    }
-    for (final r in (delta['artifact_refs'] as List? ?? [])) {
-      if (!artifactRefs.contains(r)) artifactRefs.add(r as String);
-    }
-  }
-
   String render({int maxTokens = 800}) {
     final parts = <String>[];
     if (goal.isNotEmpty) parts.add('goal: $goal');

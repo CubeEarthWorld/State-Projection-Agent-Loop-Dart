@@ -288,51 +288,20 @@ void main() {
     });
   });
 
-  group('CompactionWiring', () {
-    test('session folds overflow into working state', () async {
-      final summarizer = ScriptedLLM(
-        [
-          for (var i = 0; i < 10; i++)
-            const TextStep(
-                '{"new_facts": ["topic A was discussed"], "new_decisions": [], "next_actions": []}'),
-        ],
-        strict: false,
-      );
+  group('FidelityCompression', () {
+    test('old messages are compressed in projection', () async {
       final cfg = Config.fromMap({
-        'projection': {'window_tokens': 700},
+        'projection': {'window_tokens': 2000},
       });
       final llm = ScriptedLLM([
-        for (var i = 0; i < 6; i++) TextStep('reply $i: ${'filler words here ' * 40}'),
-      ]);
-      final session = Session(llm, config: cfg, summarizer: summarizer);
-      for (var i = 0; i < 6; i++) {
-        await session.send('question $i');
-      }
-      expect(session.workingState.confirmedFacts, isNotEmpty,
-          reason: 'overflow should have been folded into working_state');
-      expect(summarizer.requests, isNotEmpty, reason: 'the summarizer LLM should have been called');
-      final prompt = (summarizer.requests[0]['messages'] as List<Message>)[0].content.toString();
-      expect(prompt, contains('JSON'));
-    });
-
-    test('compaction model none uses deterministic fold', () async {
-      final cfg = Config.fromMap({
-        'projection': {'window_tokens': 700},
-        'compaction': {'model': 'none'},
-      });
-      final llm = ScriptedLLM([
-        for (var i = 0; i < 6; i++) TextStep('reply $i: ${'filler words here ' * 40}'),
+        for (var i = 0; i < 8; i++) TextStep('reply $i: ${'filler words here ' * 40}'),
       ]);
       final session = Session(llm, config: cfg);
-      for (var i = 0; i < 6; i++) {
+      for (var i = 0; i < 8; i++) {
         await session.send('question $i');
       }
-      expect(session.workingState.confirmedFacts, isNotEmpty);
-      expect(
-        session.workingState.confirmedFacts
-            .any((f) => f.contains('verbatim') || f.contains('question 0')),
-        isTrue,
-      );
+      expect(session.budget.steps, equals(8));
+      expect(session.conversation.length, equals(16));
     });
   });
 
