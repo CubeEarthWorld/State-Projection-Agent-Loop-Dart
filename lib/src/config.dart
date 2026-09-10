@@ -159,17 +159,14 @@ class LimitsConfig {
 class PersistenceConfig {
   PersistenceConfig({
     this.ledgerDirectory,
-    this.snapshotEveryNEvents = 20,
   });
 
   // Directory for the JSONL event ledger + snapshots. null keeps the
   // ledger in-memory only (no cross-process resume).
   String? ledgerDirectory;
-  int snapshotEveryNEvents;
 
   Map<String, Object?> toMap() => {
         'ledger_directory': ledgerDirectory,
-        'snapshot_every_n_events': snapshotEveryNEvents,
       };
 }
 
@@ -276,8 +273,6 @@ class Config {
         case 'persistence':
           _applySub(cfg.persistence, value, key, {
             'ledger_directory': (v) => cfg.persistence.ledgerDirectory = v as String?,
-            'snapshot_every_n_events': (v) =>
-                cfg.persistence.snapshotEveryNEvents = (v as num).toInt(),
           });
       }
     }

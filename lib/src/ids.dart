@@ -70,7 +70,6 @@ const Map<String, String> _prefixes = {
   'command': 'cmd',
   'approval': 'apr',
   'artifact': 'art',
-  'branch': 'brn',
 };
 
 /// A prefixed ULID for the given entity kind, e.g. `newId("run")`.

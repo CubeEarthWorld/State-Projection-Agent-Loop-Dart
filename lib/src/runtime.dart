@@ -34,7 +34,6 @@ import 'config.dart';
 import 'json_schema.dart';
 import 'messages.dart';
 import 'policy.dart';
-import 'projection.dart' show TurnContext;
 import 'registry.dart';
 import 'run.dart';
 import 'tokens.dart';
@@ -167,7 +166,6 @@ class Runtime {
   /// strictly in the order the model asked for it.
   Future<ExecuteBatchResult> execute(
     List<ToolCall> calls,
-    TurnContext turn,
     ToolContext ctx,
     Run run,
     PolicyEngine policy,
@@ -254,7 +252,6 @@ class Runtime {
     Run run,
     ToolContext ctx,
     PolicyEngine policy,
-    TurnContext turn,
   ) async {
     final pending = run.pendingCalls;
     if (pending.isEmpty) return ExecuteBatchResult(results: [], halted: false);
@@ -310,7 +307,7 @@ class Runtime {
           await _executeOne(capability, args, ctx, run, firstCall, command: approved));
     }
     run.pendingCalls = [];
-    final rest = await execute(pending.sublist(1), turn, ctx, run, policy);
+    final rest = await execute(pending.sublist(1), ctx, run, policy);
     results.addAll(rest.results);
     return ExecuteBatchResult(results: results, halted: rest.halted);
   }

@@ -52,6 +52,7 @@ class Registry {
   // name stays disabled however it is registered afterwards, so bundled
   // tools that self-install (ensureMetaTools) cannot sneak back in.
   final Set<String> _disabled;
+  (int, List<Capability>) _pinnedCache = (-1, const []);
   final List<ToolProvider> _providers = [];
   final Map<int, Set<String>> _providerTools = {};
 
@@ -237,8 +238,14 @@ class Registry {
 
   List<Capability> all() => all_.toList();
 
-  List<Capability> pinned() =>
-      all_.where((c) => c.discovery.pinned).toList();
+  /// Cached by epoch: this is read several times per turn (native schemas,
+  /// the kernel section, the layer-2 exclusion set).
+  List<Capability> pinned() {
+    if (_pinnedCache.$1 != _epoch) {
+      _pinnedCache = (_epoch, all_.where((c) => c.discovery.pinned).toList());
+    }
+    return _pinnedCache.$2;
+  }
 
   Map<String, int> categories() {
     final counts = <String, int>{};
@@ -265,14 +272,6 @@ class Registry {
       for (final cat in sortedKeys) cat: (totals[cat]!, pinnedCounts[cat] ?? 0),
     };
   }
-
-  List<Capability> inCategory(String category) => all_
-      .where((c) {
-        final cat = c.category.isEmpty ? 'misc' : c.category;
-        final trimmed = category.replaceAll(RegExp(r'/$'), '');
-        return cat == category || cat.startsWith('$trimmed/');
-      })
-      .toList();
 
   // -- layer 1: table of contents -------------------------------------------
 

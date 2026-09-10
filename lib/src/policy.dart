@@ -342,12 +342,3 @@ class PolicyEngine {
   }
 }
 
-/// Small helper so callers don't hardcode a bare number of seconds.
-class ApprovalExpiry {
-  ApprovalExpiry({this.seconds = 3600.0});
-
-  final double seconds;
-
-  double at({double? now}) =>
-      (now ?? DateTime.now().millisecondsSinceEpoch / 1000.0) + seconds;
-}

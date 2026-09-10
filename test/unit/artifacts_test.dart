@@ -1,6 +1,8 @@
 // Artifact store: structured references never confuse literal strings
 // (P0-6), previews, peek, run namespacing, move().
 import 'package:state_projection_loop/state_projection_loop.dart';
+import 'dart:io';
+
 import 'package:test/test.dart';
 
 void main() {
@@ -98,6 +100,30 @@ void main() {
       expect(moved.id, isNot(equals(childRecord.id)));
       expect(parent.get(moved.id), equals({'result': 42}));
       expect(parent.exists(childRecord.id), isFalse);
+    });
+  });
+  group('persistence round trip', () {
+    // Persisted artifacts are for a resumed run to read back; a store that
+    // only ever writes them is a promise the docstring cannot keep.
+    test('a new store recovers a persisted artifact', () {
+      final dir = Directory.systemTemp.createTempSync('spal_art_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final first = ArtifactStore('run_1', directory: dir);
+      final record = first.put('payload ' * 500, source: 'demo.tool');
+
+      final second = ArtifactStore('run_1', directory: dir);
+      expect(second.exists(record.id), isTrue);
+      expect(second.peek(record.id), contains('payload'));
+    });
+
+    test('another run still cannot see it', () {
+      final dir = Directory.systemTemp.createTempSync('spal_art_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final first = ArtifactStore('run_1', directory: dir);
+      final record = first.put('payload', source: 'demo.tool');
+      final other = ArtifactStore('run_2', directory: dir);
+      expect(other.exists(record.id), isFalse);
+      expect(other.peek(record.id), contains('unknown artifact'));
     });
   });
 }

@@ -248,7 +248,7 @@ class HistorySection implements Section {
           // verbatim
         } else if (age < cfg.compressedWindow) {
           if (msgDict['role'] == kObservation) {
-            content = compressObservation(content, maxLines: cfg.observationMaxLines);
+            content = compressText(content, maxLines: cfg.observationMaxLines);
           } else {
             content = compressText(content, maxLines: cfg.compressedMaxLines);
           }
@@ -274,6 +274,24 @@ class HistorySection implements Section {
       ));
     }
     return pairToolCalls(messages);
+  }
+}
+
+/// Projects the working state each turn (volatile — always near the tail).
+class WorkingStateSection implements Section {
+  WorkingStateSection({this.maxTokens = 800});
+
+  @override
+  final String name = 'working_state';
+  final int maxTokens;
+
+  @override
+  List<Message> render(TurnContext turn) {
+    final ws = turn.workingState;
+    if (ws.isEmpty()) return const [];
+    final body = ws.render(maxTokens: maxTokens);
+    if (body.isEmpty) return const [];
+    return [Message(role: kSystem, content: '[Working state]\n$body')];
   }
 }
 
@@ -410,7 +428,7 @@ List<Section> buildDefaultSections(
   final factories = <String, Section Function()>{
     'kernel': () => KernelSection(kernelText),
     'toc': () => TocSection(),
-    'working_state': () => _WorkingStateSectionAdapter(WorkingStateSection()),
+    'working_state': () => WorkingStateSection(),
     'checklists': () => ChecklistSection(),
     'history': () => HistorySection(),
     'candidates': () => CandidatesSection(),
@@ -443,14 +461,3 @@ class ChecklistSection implements Section {
   }
 }
 
-class _WorkingStateSectionAdapter implements Section {
-  _WorkingStateSectionAdapter(this._inner);
-
-  final WorkingStateSection _inner;
-
-  @override
-  String get name => _inner.name;
-
-  @override
-  List<Message> render(TurnContext turn) => _inner.render(turn);
-}

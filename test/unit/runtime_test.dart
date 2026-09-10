@@ -30,7 +30,7 @@ import 'package:state_projection_loop/src/json_schema.dart' show miniValidate;
 
 Future<ExecuteBatchResult> runBatch(Runtime runtime, List<ToolCall> calls, TurnContext turn,
         ToolContext ctx, Run run, PolicyEngine policy) =>
-    runtime.execute(calls, turn, ctx, run, policy);
+    runtime.execute(calls, ctx, run, policy);
 
 Registry echoRegistry() {
   final reg = Registry();

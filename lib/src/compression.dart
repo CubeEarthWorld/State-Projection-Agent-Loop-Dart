@@ -93,8 +93,3 @@ String summarizeText(String text) {
   return '$truncatedFirst  [$lineCount lines, $charCount chars]';
 }
 
-String compressObservation(String text, {int maxLines = 40}) {
-  return compressText(text, maxLines: maxLines);
-}
-
-String dedupeKey(String content) => contentHash(content);

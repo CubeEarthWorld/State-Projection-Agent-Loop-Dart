@@ -18,7 +18,6 @@ library;
 
 import 'dart:convert';
 
-import 'messages.dart';
 import 'tokens.dart';
 import 'checklists.dart';
 
@@ -149,28 +148,6 @@ class WorkingState {
       body = body.length > cutoff ? body.substring(0, cutoff) : body;
     }
     return body;
-  }
-}
-
-/// Projects the working state each turn (volatile — always near the tail).
-class WorkingStateSection {
-  WorkingStateSection({this.maxTokens = 800});
-
-  final String name = 'working_state';
-  final String cacheClass = 'volatile';
-  final int maxTokens;
-
-  List<Message> render(Object? turn) {
-    final ws = (turn as dynamic).workingState as WorkingState?;
-    if (ws == null || ws.isEmpty()) return const [];
-    final body = ws.render(maxTokens: maxTokens);
-    if (body.isEmpty) return const [];
-    return [
-      Message(
-        role: kSystem,
-        content: '[Working state]\n$body',
-      ),
-    ];
   }
 }
 

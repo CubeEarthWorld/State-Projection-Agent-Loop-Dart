@@ -30,12 +30,6 @@ const List<String> retrySafetyKinds = [
   'check_then_retry',
   'never_retry',
 ];
-const List<String> concurrencyPolicies = [
-  'parallel_safe',
-  'sequential_only',
-  'exclusive_resource',
-];
-
 /// Handler signature for capabilities that do not need [ToolContext]. May
 /// be sync or async (return a bare value or a [Future]).
 typedef PlainHandler = FutureOr<Object?> Function(Map<String, Object?> args);
@@ -159,36 +153,15 @@ class OutputPolicy {
   final String preview;
 }
 
-class ConcurrencyPolicy {
-  ConcurrencyPolicy({this.mode = 'sequential_only', this.resourceKey}) {
-    if (!concurrencyPolicies.contains(mode)) {
-      throw ArgumentError(
-          'concurrency.mode must be one of $concurrencyPolicies, got "$mode"');
-    }
-    if (mode == 'exclusive_resource' &&
-        (resourceKey == null || resourceKey!.isEmpty)) {
-      throw ArgumentError(
-          "concurrency.mode='exclusive_resource' requires resourceKey");
-    }
-  }
-
-  final String mode;
-  final String? resourceKey;
-}
-
 class CapabilityExecution {
   CapabilityExecution({
     this.handler,
-    this.handlerRef = '',
     this.timeoutS = 30.0,
     this.retries = 0,
     this.retrySafety = 'never_retry',
-    ConcurrencyPolicy? concurrency,
     this.resolveHandles = true,
     OutputPolicy? outputPolicy,
-    this.compensation,
-  })  : concurrency = concurrency ?? ConcurrencyPolicy(),
-        outputPolicy = outputPolicy ?? OutputPolicy() {
+  }) : outputPolicy = outputPolicy ?? OutputPolicy() {
     if (!retrySafetyKinds.contains(retrySafety)) {
       throw ArgumentError(
           'retry_safety must be one of $retrySafetyKinds, got "$retrySafety"');
@@ -204,14 +177,11 @@ class CapabilityExecution {
   /// the owning [Capability]. Replaces Python's `handler_ref` + `importlib`
   /// dynamic-import path, which has no Dart equivalent.
   final Function? handler;
-  final String handlerRef;
   final double timeoutS;
   final int retries;
   final String retrySafety;
-  final ConcurrencyPolicy concurrency;
   final bool resolveHandles;
   final OutputPolicy outputPolicy;
-  final String? compensation;
 }
 
 const Map<String, String> _jsonToDartType = {
@@ -320,7 +290,6 @@ class Capability {
     CapabilityDiscovery? discovery,
     CapabilityExecution? execution,
     List<Effect>? effects,
-    this.permission = '',
     this.wantsCtx = false,
   })  : card = card ?? CapabilityCard(),
         spec = spec ?? CapabilitySpec(),
@@ -338,7 +307,6 @@ class Capability {
   final CapabilityDiscovery discovery;
   final CapabilityExecution execution;
   final List<Effect> effects;
-  final String permission;
   bool wantsCtx;
 
   String get qualifiedName => '$name@$version';
@@ -348,7 +316,6 @@ class Capability {
 
   /// Undeclared effects are NOT treated as pure — see `PolicyEngine.evaluate`
   /// and `Runtime._isReadOnly` for the same conservative default.
-  bool get isPure => effects.isNotEmpty && effects.every((e) => e.kind == 'none');
 
   /// Build a [Capability] from a plain-map definition (the only
   /// construction path in this port — see the library note about dropped
@@ -394,25 +361,17 @@ class Capability {
     final exeD = (data['execution'] as Map?)?.cast<String, Object?>() ?? {};
     final opD =
         (exeD['output_policy'] as Map?)?.cast<String, Object?>() ?? {};
-    final concD =
-        (exeD['concurrency'] as Map?)?.cast<String, Object?>() ?? {};
     final execution = CapabilityExecution(
       handler: handler,
-      handlerRef: exeD['handler'] is String ? exeD['handler'] as String : '',
       timeoutS: ((exeD['timeout_s'] as num?) ?? 30.0).toDouble(),
       retries: (exeD['retries'] as num?)?.toInt() ?? 0,
       retrySafety: (exeD['retry_safety'] as String?) ?? 'never_retry',
-      concurrency: ConcurrencyPolicy(
-        mode: (concD['mode'] as String?) ?? 'sequential_only',
-        resourceKey: concD['resource_key'] as String?,
-      ),
       resolveHandles: (exeD['resolve_handles'] as bool?) ?? true,
       outputPolicy: OutputPolicy(
         maxInlineTokens: (opD['max_inline_tokens'] as num?)?.toInt(),
         overflow: (opD['overflow'] as String?) ?? 'artifact',
         preview: (opD['preview'] as String?) ?? 'head',
       ),
-      compensation: exeD['compensation'] as String?,
     );
     final effects = [
       for (final e in (data['effects'] as List? ?? []))
@@ -430,7 +389,6 @@ class Capability {
       discovery: discovery,
       execution: execution,
       effects: effects,
-      permission: (data['permission'] as String?) ?? '',
     );
     cap.deriveCard();
     cap.wantsCtx = wantsCtx;

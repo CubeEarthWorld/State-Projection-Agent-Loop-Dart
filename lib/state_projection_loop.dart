@@ -17,17 +17,15 @@ export 'src/capability.dart'
         CapabilitySpec,
         CapabilityDiscovery,
         CapabilityExecution,
-        ConcurrencyPolicy,
         OutputPolicy,
         Effect,
         ToolContext,
         PlainHandler,
         CtxHandler,
         effectKinds,
-        retrySafetyKinds,
-        concurrencyPolicies;
+        retrySafetyKinds;
 export 'src/compression.dart'
-    show compressText, compressObservation, summarizeText, contentHash, stripNoise, headTailTruncate;
+    show compressText, summarizeText, contentHash, stripNoise, headTailTruncate;
 export 'src/config.dart'
     show
         Config,
@@ -62,7 +60,6 @@ export 'src/policy.dart'
         PolicyEngine,
         PolicyDecision,
         Rule,
-        ApprovalExpiry,
         layerOrder,
         decisions,
         scopes,
@@ -79,6 +76,7 @@ export 'src/projection.dart'
         HistorySection,
         CandidatesSection,
         ChecklistSection,
+        WorkingStateSection,
         buildDefaultSections;
 export 'src/registry.dart' show Registry, ToolProvider;
 export 'src/run.dart'
@@ -93,7 +91,7 @@ export 'src/runtime.dart'
         applyDefaults,
         outcomes;
 export 'src/session.dart' show Session, ConcurrencyError;
-export 'src/tokens.dart' show estimateTokens, estimateTextTokens, setEstimator, resetEstimator;
-export 'src/working_state.dart' show WorkingState, WorkingStateSection, RecordedDecision;
+export 'src/tokens.dart' show estimateTokens, estimateTextTokens, setEstimator;
+export 'src/working_state.dart' show WorkingState, RecordedDecision, workingStateFields;
 
 const String packageVersion = '0.4.0';

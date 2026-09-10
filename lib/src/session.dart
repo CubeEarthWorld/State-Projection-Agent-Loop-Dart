@@ -209,8 +209,7 @@ class Session {
       if (run.state != 'RUNNING') {
         throw RunStateError('Run ${run.id} is not resumable from state ${run.state}');
       }
-      final turn = _newTurn();
-      final batch = await runtime.resumePending(run, _toolContext(), policy, turn);
+      final batch = await runtime.resumePending(run, _toolContext(), policy);
       _applyBatch(batch);
       _snapshot();
       if (batch.halted) return run.pendingApproval;
@@ -222,9 +221,8 @@ class Session {
 
   Future<Object?> invoke(String capabilityName, [Map<String, Object?>? arguments]) async {
     return _guarded(() async {
-      final turn = _newTurn();
       final call = ToolCall(name: capabilityName, arguments: arguments ?? {});
-      final batch = await runtime.execute([call], turn, _toolContext(), run, policy);
+      final batch = await runtime.execute([call], _toolContext(), run, policy);
       _applyBatch(batch, record: false);
       _snapshot();
       if (batch.halted) return run.pendingApproval;
@@ -268,9 +266,17 @@ class Session {
     return (newSession, _irreversibleEffects());
   }
 
-  List<String> _irreversibleEffects() {
+  /// External effects this run already committed — a sent email, a pushed
+  /// commit. Neither branching nor rewinding can undo them, so both report
+  /// them; [upToTurn] stops the scan at the cut point.
+  List<String> _irreversibleEffects({int? upToTurn}) {
     final notices = <String>[];
+    var userCount = 0;
     for (final event in ledger.iterRun(run.id)) {
+      if (event.type == 'user_input' && upToTurn != null) {
+        if (userCount >= upToTurn) break;
+        userCount++;
+      }
       if (event.type != 'command_completed') continue;
       final command = run.commands[event.data['command_id']];
       if (command == null) continue;
@@ -458,7 +464,7 @@ class Session {
 
       _idleTurns = 0;
       ledger.append(run.id, 'decision_validated', {'ok': true, 'finish': false});
-      final batch = await runtime.execute(resolvedCalls, turn, _toolContext(), run, policy);
+      final batch = await runtime.execute(resolvedCalls, _toolContext(), run, policy);
       _applyBatch(batch);
       _snapshot();
       if (batch.halted) return run.pendingApproval;
@@ -621,7 +627,7 @@ class Session {
   /// Returns a list of irreversible external effects that already executed
   /// and cannot be undone.
   List<String> rewind({required int toTurn}) {
-    final irreversible = _irreversibleEffectsUpTo(toTurn);
+    final irreversible = _irreversibleEffects(upToTurn: toTurn);
     final allEvents = ledger.iterRun(run.id).toList();
     final renderable = allEvents.where((e) => renderableTypes.contains(e.type)).toList();
 
@@ -674,29 +680,6 @@ class Session {
     _snapshot();
 
     return irreversible;
-  }
-
-  List<String> _irreversibleEffectsUpTo(int toTurn) {
-    final notices = <String>[];
-    var userCount = 0;
-    for (final event in ledger.iterRun(run.id)) {
-      if (event.type == 'user_input') {
-        if (userCount >= toTurn) break;
-        userCount++;
-      }
-      if (event.type != 'command_completed') continue;
-      final command = run.commands[event.data['command_id']];
-      if (command == null) continue;
-      final capabilityName = command.capabilityName.contains('@')
-          ? command.capabilityName.substring(0, command.capabilityName.lastIndexOf('@'))
-          : command.capabilityName;
-      final capability = registry.get(capabilityName);
-      if (capability != null && capability.effects.any((e) => e.kind == 'external')) {
-        notices.add(
-            '${capability.qualifiedName} (command ${command.id}) already ran and cannot be undone');
-      }
-    }
-    return notices;
   }
 
   void _noteUsage(Decision decision, List<Message> messages) {

@@ -11,6 +11,8 @@ library;
 
 import 'dart:convert';
 
+import 'messages.dart';
+
 const List<List<int>> _cjkRanges = [
   [0x1100, 0x11FF], // Hangul Jamo
   [0x2E80, 0x2FDF], // CJK radicals
@@ -50,12 +52,6 @@ void setEstimator(TokenEstimator fn) {
   _estimator = fn;
 }
 
-/// Reset the global token estimator to the default heuristic (mainly useful
-/// for tests that install a custom estimator).
-void resetEstimator() {
-  _estimator = estimateTextTokens;
-}
-
 const JsonEncoder _jsonEncoder = JsonEncoder();
 
 String _jsonEncode(Object? obj) => _jsonEncoder.convert(_jsonSafe(obj));
@@ -71,22 +67,6 @@ Object? _jsonSafe(Object? obj) {
   return obj.toString();
 }
 
-/// Anything that quacks like a message: has `role`/`content`, optionally
-/// `toolCalls` with `name`/`arguments`. Used so [estimateTokens] can special
-/// case message-shaped objects without importing `messages.dart` (avoids a
-/// dependency cycle) — callers with an actual `Message` should prefer
-/// passing its fields directly, but a duck-typed interface is provided here
-/// for convenience via [TokenEstimable].
-abstract class TokenEstimable {
-  String get role;
-  Object? get content;
-  List<TokenEstimableCall> get toolCalls;
-}
-
-abstract class TokenEstimableCall {
-  String get name;
-  Map<String, Object?> get arguments;
-}
 
 /// Estimate tokens for text, message-like objects, lists, or maps.
 int estimateTokens(Object? obj) {
@@ -95,7 +75,7 @@ int estimateTokens(Object? obj) {
   if (obj is List) {
     return obj.fold<int>(0, (sum, x) => sum + estimateTokens(x));
   }
-  if (obj is TokenEstimable) {
+  if (obj is Message) {
     var total = 4 + estimateTokens(obj.content);
     for (final tc in obj.toolCalls) {
       total += 6 + _estimator(tc.name) + _estimator(_jsonEncode(tc.arguments));
