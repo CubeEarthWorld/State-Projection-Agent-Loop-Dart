@@ -467,7 +467,12 @@ class Session {
 
   void _applyBatch(ExecuteBatchResult batch, {bool record = true}) {
     for (final result in batch.results) {
-      if (record) {
+      // A call parked on an approval has no result yet. Recording a
+      // placeholder observation would either be overwritten by the real one
+      // on resume (two results for one call) or stand in for a call that
+      // never ran; instead the whole decision stays out of the projection
+      // until it completes — see pairToolCalls.
+      if (record && result.outcome != 'waiting_approval') {
         _observe(result.call.id, result.call.name, result.observation);
       }
       if (result.ok) {

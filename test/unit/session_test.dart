@@ -508,4 +508,72 @@ void main() {
       }));
     });
   });
+  group('approval keeps the decision intact', () {
+    // A decision parked on an approval is either shown with all of its
+    // results or not shown at all. Anything in between is a 400 from a
+    // native tool-calling provider.
+    Session buildSession(List<Step> steps) {
+      final registry = Registry();
+      registry.register(capabilityDict('demo.write', effects: [('external', '*')]),
+          handler: (Map<String, Object?> args) => 'written');
+      registry.register(capabilityDict('demo.second', effects: [('external', '*')]),
+          handler: (Map<String, Object?> args) => 'second');
+      return Session(ScriptedLLM(steps),
+          registry: registry, policy: PolicyEngine(defaultDecision: 'require_approval'));
+    }
+
+    TurnContext turnOf(Session session) => TurnContext(
+          config: session.config,
+          registry: session.registry,
+          ledger: session.ledger,
+          runId: session.run.id,
+        );
+
+    List<(String, String)> observations(Session session) => [
+          for (final e in session.ledger.iterRun(session.run.id))
+            if (e.type == 'observation')
+              (e.data['call_id'].toString(), e.data['text'].toString()),
+        ];
+
+    test('a parked decision is not projected at all', () async {
+      final session = buildSession([DecisionStep(ScriptedLLM.call('demo.write'))]);
+      await session.send('do it');
+      expect(session.run.state, equals('WAITING_FOR_APPROVAL'));
+      expect(observations(session), isEmpty);
+      final history = session.projection.get('history')!.render(turnOf(session));
+      expect(history.any((m) => m.role == 'assistant' && m.toolCalls.isNotEmpty), isFalse);
+    });
+
+    test('approval produces exactly one result per call', () async {
+      final session = buildSession([
+        DecisionStep(ScriptedLLM.call('demo.write')),
+        const TextStep('done'),
+      ]);
+      await session.send('do it');
+      session.resolveApproval('approved');
+      await session.resume();
+      final callIds = observations(session).map((o) => o.$1).toList();
+      expect(callIds.length, equals(1));
+      expect(callIds.toSet().length, equals(1));
+      expect(observations(session).first.$2, contains('written'));
+    });
+
+    test('denial answers every parked call', () async {
+      final session = buildSession([
+        DecisionStep(ScriptedLLM.calls([('demo.write', {}), ('demo.second', {})])),
+        const TextStep('done'),
+      ]);
+      await session.send('do both');
+      session.resolveApproval('denied');
+      await session.resume();
+      final obs = observations(session);
+      expect(obs.length, equals(2), reason: 'both parked calls need a result, got $obs');
+      for (final o in obs) {
+        final text = o.$2.toLowerCase();
+        expect(text.contains('denied') || text.contains('not executed'), isTrue);
+      }
+      final history = session.projection.get('history')!.render(turnOf(session));
+      expect(history.any((m) => m.role == 'assistant' && m.toolCalls.isNotEmpty), isTrue);
+    });
+  });
 }

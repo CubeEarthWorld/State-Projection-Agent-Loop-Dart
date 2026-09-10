@@ -14,6 +14,16 @@ import '../util.dart';
     ledger.append(runId, 'user_input', {'text': 'message $i ${'pad ' * 20}'});
     ledger.append(runId, 'model_response', {'text': 'reply $i', 'calls': []});
   }
+  if (nObs > 0) {
+    // Observations only ever follow the decision that asked for them; the
+    // projection drops a result whose call is not there (and vice versa).
+    ledger.append(runId, 'model_response', {
+      'text': '',
+      'calls': [
+        for (var i = 0; i < nObs; i++) {'name': 'tool', 'arguments': {}, 'id': 'c$i'},
+      ],
+    });
+  }
   for (var i = 0; i < nObs; i++) {
     ledger.append(runId, 'observation',
         {'call_id': 'c$i', 'name': 'tool', 'text': 'result $i ${'data ' * 30}'});
@@ -309,6 +319,77 @@ void main() {
       );
       final names = sections.map((s) => s.name).toList();
       expect(names, equals(['kernel', 'toc', 'history', 'working_state', 'candidates']));
+    });
+  });
+  group('tool call pairing', () {
+    // A native tool-calling provider rejects an assistant message whose
+    // toolCalls have no matching results, and a result with no call. The
+    // projection must never emit either, whatever produced the gap.
+    void decision(InMemoryLedger ledger, String runId, List<String> callIds,
+        {String text = ''}) {
+      ledger.append(runId, 'model_response', {
+        'text': text,
+        'calls': [
+          for (final cid in callIds) {'name': 'demo.tool', 'arguments': {}, 'id': cid},
+        ],
+      });
+    }
+
+    void result(InMemoryLedger ledger, String runId, String callId, {String text = 'ok'}) {
+      ledger.append(runId, 'observation', {'call_id': callId, 'name': 'demo.tool', 'text': text});
+    }
+
+    List<Message> render(InMemoryLedger ledger, String runId,
+        {int? fullWindow, int? compressedWindow, int? summaryWindow}) {
+      final turn = makeTurn(ledger: ledger, runId: runId);
+      final cfg = turn.config.compression;
+      if (fullWindow != null) cfg.fullWindow = fullWindow;
+      if (compressedWindow != null) cfg.compressedWindow = compressedWindow;
+      if (summaryWindow != null) cfg.summaryWindow = summaryWindow;
+      return HistorySection().render(turn);
+    }
+
+    test('a decision still awaiting its results is hidden', () {
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      ledger.append(runId, 'user_input', {'text': 'hi'});
+      decision(ledger, runId, ['c0']); // parked on an approval: no result yet
+      expect(render(ledger, runId).map((m) => m.role).toList(), equals(['user']));
+    });
+
+    test('a partly answered decision is hidden whole', () {
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      ledger.append(runId, 'user_input', {'text': 'hi'});
+      decision(ledger, runId, ['c0', 'c1']);
+      result(ledger, runId, 'c0');
+      expect(render(ledger, runId).map((m) => m.role).toList(), equals(['user']));
+    });
+
+    test('a complete decision is kept', () {
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      ledger.append(runId, 'user_input', {'text': 'hi'});
+      decision(ledger, runId, ['c0', 'c1']);
+      result(ledger, runId, 'c0');
+      result(ledger, runId, 'c1');
+      expect(render(ledger, runId).map((m) => m.role).toList(),
+          equals(['user', 'assistant', 'tool', 'tool']));
+    });
+
+    test('age-based exclusion never orphans a result', () {
+      // The oldest events fall out of the window one at a time; the cut must
+      // not land between a decision and its results.
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      decision(ledger, runId, ['c0']);
+      result(ledger, runId, 'c0');
+      for (var i = 0; i < 4; i++) {
+        ledger.append(runId, 'user_input', {'text': 'later $i'});
+      }
+      final msgs = render(ledger, runId, fullWindow: 1, compressedWindow: 2, summaryWindow: 4);
+      expect(msgs.any((m) => m.role == 'assistant' && m.toolCalls.isNotEmpty), isFalse);
+      expect(msgs.any((m) => m.role == 'tool'), isFalse);
     });
   });
 }

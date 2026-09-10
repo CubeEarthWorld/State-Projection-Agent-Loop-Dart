@@ -188,6 +188,38 @@ class TocSection implements Section {
   }
 }
 
+/// Enforce the one invariant every native tool-calling provider requires: an
+/// assistant message's `toolCalls` and their results appear together, or
+/// neither appears.
+///
+/// Three things in this pipeline can break that pair — a decision still
+/// waiting on an approval, age-based exclusion crossing the boundary between
+/// a decision and its results, and the emergency window trim — and a provider
+/// answers a broken pair with a 400, not a degraded reply. One rule applied
+/// to the finished message list covers all three.
+List<Message> pairToolCalls(List<Message> messages) {
+  final resultIds = {
+    for (final m in messages)
+      if (m.role == kObservation && m.toolCallId != null) m.toolCallId!,
+  };
+  final keptCallIds = <String>{};
+  final kept = <Message>[];
+  for (final message in messages) {
+    if (message.role == kAssistant && message.toolCalls.isNotEmpty) {
+      final callIds = {for (final tc in message.toolCalls) tc.id};
+      if (!resultIds.containsAll(callIds)) continue; // incomplete: drop it whole
+      keptCallIds.addAll(callIds);
+    }
+    kept.add(message);
+  }
+  return [
+    for (final m in kept)
+      if (!(m.role == kObservation &&
+          m.toolCallId != null &&
+          !keptCallIds.contains(m.toolCallId))) m,
+  ];
+}
+
 /// Derives conversation messages from the Event Ledger with fidelity-graded
 /// compression. Replaces the old ConversationSection + Compactor.
 class HistorySection implements Section {
@@ -241,7 +273,7 @@ class HistorySection implements Section {
         ],
       ));
     }
-    return messages;
+    return pairToolCalls(messages);
   }
 }
 
@@ -362,7 +394,7 @@ class Projection {
       }
     }
     for (final e in rendered) {
-      flat.addAll(e.$2);
+      flat.addAll(e.$1.name == 'history' ? pairToolCalls(e.$2) : e.$2);
     }
     return flat;
   }

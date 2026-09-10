@@ -265,9 +265,12 @@ class Runtime {
         : null;
     if (resolved != null && resolved.resolution == 'denied') {
       final deniedCommand = run.commands[resolved.commandId];
-      final observation =
-          'Approval denied: ${deniedCommand?.capabilityName ?? firstCall.name} was not executed.';
+      final deniedName = deniedCommand?.capabilityName ?? firstCall.name;
+      final rest = pending.skip(1).toList();
       run.pendingCalls = [];
+      // Every parked call needs its own result: the denial cancels the rest
+      // of the decision too, and a call left without one would take the whole
+      // decision out of the projection.
       return ExecuteBatchResult(
         results: [
           ToolResult(
@@ -275,9 +278,17 @@ class Runtime {
             ok: false,
             outcome: 'denied',
             error: 'approval_denied',
-            observation: observation,
+            observation: 'Approval denied: $deniedName was not executed.',
             commandId: deniedCommand?.id,
           ),
+          for (final call in rest)
+            ToolResult(
+              call: call,
+              ok: false,
+              outcome: 'denied',
+              error: 'approval_denied',
+              observation: 'Not executed: the approval for $deniedName was denied.',
+            ),
         ],
         halted: false,
       );
