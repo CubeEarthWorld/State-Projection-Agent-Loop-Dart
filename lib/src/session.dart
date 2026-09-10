@@ -85,17 +85,14 @@ class Session {
     search = ToolSearch(this.registry, embedder: embedder, vector: this.config.discovery.vector);
 
     _kernelText = kernel;
-    final pinned = this.registry.pinned();
     final sectionList = sections ??
         buildDefaultSections(
           this.config.projection.sections,
           kernelText: kernel,
-          pinned: pinned,
           extra: extraSections,
         );
     projection = Projection(sectionList, windowTokens: this.config.projection.windowTokens);
     runtime = Runtime(this.registry, store, this.config);
-    runtime.seenSpecs.addAll(pinned.map((c) => c.name));
 
     workingState = WorkingState();
     for (final entry in (seed ?? {}).entries) {
@@ -104,7 +101,10 @@ class Session {
 
     budget = BudgetState();
 
-    _active = LinkedHashSet<String>.from(pinned.map((c) => c.name));
+    // Recently used non-pinned tools (an LRU). Pinned capabilities are added
+    // by _apiTools straight from the registry, so they are never tracked here
+    // and can never be evicted.
+    _active = LinkedHashSet<String>();
     this.ledger.append(
         run.id, 'run_state_changed', {'from': 'RUNNING', 'to': 'RUNNING', 'reason': 'created'});
     _snapshot();
@@ -596,17 +596,8 @@ class Session {
   void _activate(String name) {
     _active.remove(name);
     _active.add(name);
-    final pinnedNames = registry.pinned().map((c) => c.name).toSet();
     while (_active.length > _activeToolCap) {
-      String? toRemove;
-      for (final candidate in _active) {
-        if (!pinnedNames.contains(candidate)) {
-          toRemove = candidate;
-          break;
-        }
-      }
-      if (toRemove == null) break;
-      _active.remove(toRemove);
+      _active.remove(_active.first);
     }
   }
 
@@ -697,9 +688,7 @@ class Session {
     _idleTurns = 0;
     _budgetGraceUsed = false;
     _active.clear();
-    _active.addAll(registry.pinned().map((c) => c.name));
     runtime.seenSpecs.clear();
-    runtime.seenSpecs.addAll(registry.pinned().map((c) => c.name));
     _snapshot();
 
     return irreversible;

@@ -45,7 +45,6 @@ Projection defaultProjection(Registry registry, {String kernel = 'You are helpfu
   final sections = buildDefaultSections(
     ['kernel', 'toc', 'history', 'working_state', 'candidates'],
     kernelText: kernel,
-    pinned: registry.pinned(),
   );
   return Projection(sections, windowTokens: window);
 }
@@ -199,14 +198,23 @@ void main() {
       expect(section.render(turn)[0].content.toString(), contains('web(2)'));
     });
 
-    test('kernel is immutable across registry changes', () {
+    test('kernel is stable while the registry is unchanged', () {
       final reg = Registry();
       reg.register(capabilityDict('demo.p', pinned: true));
-      final section = KernelSection('kernel', reg.pinned());
-      final before = section.render(makeTurn(registry: reg))[0].content;
+      final section = KernelSection('kernel');
+      final first = section.render(makeTurn(registry: reg))[0].content;
+      expect(section.render(makeTurn(registry: reg))[0].content, equals(first));
+    });
+
+    test('kernel picks up a capability pinned later', () {
+      final reg = Registry();
+      reg.register(capabilityDict('demo.p', pinned: true));
+      final section = KernelSection('kernel');
+      final before = section.render(makeTurn(registry: reg))[0].content as String;
+      expect(before.contains('demo.late_pin'), isFalse);
       reg.register(capabilityDict('demo.late_pin', pinned: true));
-      final after = section.render(makeTurn(registry: reg))[0].content;
-      expect(before, equals(after));
+      final after = section.render(makeTurn(registry: reg))[0].content as String;
+      expect(after.contains('demo.late_pin'), isTrue);
     });
   });
 
@@ -288,7 +296,7 @@ void main() {
   group('BuildDefaultSections', () {
     test('unknown section name rejected', () {
       expect(
-        () => buildDefaultSections(['kernel', 'mystery'], kernelText: '', pinned: []),
+        () => buildDefaultSections(['kernel', 'mystery'], kernelText: ''),
         throwsA(isA<ProjectionError>()
             .having((e) => e.toString(), 'message', contains('Unknown section'))),
       );
@@ -298,7 +306,6 @@ void main() {
       final sections = buildDefaultSections(
         ['kernel', 'toc', 'history', 'working_state', 'candidates'],
         kernelText: 'k',
-        pinned: [],
       );
       final names = sections.map((s) => s.name).toList();
       expect(names, equals(['kernel', 'toc', 'history', 'working_state', 'candidates']));

@@ -145,8 +145,8 @@ class Runtime {
   final Config config;
 
   // Capabilities whose full spec has already been projected into the
-  // conversation (pinned specs live in the kernel → pre-seeded by the
-  // session). Used by the require_spec gate.
+  // conversation. Used by the require_spec gate; pinned capabilities are
+  // exempt because their spec is always in the kernel section.
   final Set<String> seenSpecs = {};
   final Map<String, int> _consecutiveValidationFailures = {};
 
@@ -303,18 +303,25 @@ class Runtime {
     final capability = registry.get(call.name);
     if (capability == null) {
       final toc = registry.tocText();
+      // Never point at a search tool that is itself absent or disabled: a
+      // capability the model cannot reach must not be advertised.
+      final hint = registry.contains('meta.tool.find')
+          ? ' Use meta.tool.find(query) to locate the right one.'
+          : '';
       return ToolResult(
         call: call,
         ok: false,
         outcome: 'failed',
         error: 'unknown_capability',
         observation: 'Error: capability "${call.name}" is not registered. '
-            'Tool index: ${toc.isNotEmpty ? toc : '(empty)'}. '
-            'Use find_tools(query) to locate the right one.',
+            'Tool index: ${toc.isNotEmpty ? toc : '(empty)'}.$hint',
       );
     }
 
-    if (capability.discovery.requireSpec && !seenSpecs.contains(capability.name)) {
+    // A pinned capability's full spec is already in the kernel section, so
+    // the gate is satisfied by construction — no pre-seeding needed.
+    final needsSpec = capability.discovery.requireSpec && !capability.discovery.pinned;
+    if (needsSpec && !seenSpecs.contains(capability.name)) {
       seenSpecs.add(capability.name);
       return ToolResult(
         call: call,

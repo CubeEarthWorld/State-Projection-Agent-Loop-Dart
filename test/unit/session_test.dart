@@ -321,4 +321,85 @@ void main() {
       expect(await session.send('hi'), equals('async reply'));
     });
   });
+  group('disabled capabilities are invisible', () {
+    // The point of disabling: the model can neither see nor call the tool.
+    // Asserted against what actually reaches the adapter — the rendered
+    // messages and the native tool schemas — because that is the only view
+    // the model has, and every surface (schemas, pinned specs, runtime
+    // notes, tool index, candidates) lands in exactly one of those two.
+    Session buildSession(List<String> disabled, {List<Step>? steps}) {
+      final registry = Registry(disabled: disabled);
+      registry.register(
+        capabilityDict('demo.echo',
+            description: 'Echo the text back.',
+            properties: {
+              'text': {'type': 'string'},
+            },
+            required: ['text'],
+            embeddingText: 'echo repeat say'),
+        handler: (Map<String, Object?> args) => echoHandlerText(args['text'] as String? ?? ''),
+      );
+      return Session(
+        ScriptedLLM(steps ?? [const TextStep('hi')]),
+        kernel: 'K',
+        registry: registry,
+        policy: allowAllPolicy(),
+      );
+    }
+
+    (String, List<String>) sent(Session session) {
+      final request = (session.llm as ScriptedLLM).requests.last;
+      final messages = (request['messages'] as List).cast<Message>();
+      final prompt = messages
+          .map((m) => m.content)
+          .whereType<String>()
+          .join('\n');
+      final tools = (request['tools'] as List)
+          .map((t) => ((t as Map)['function'] as Map)['name'] as String)
+          .toList();
+      return (prompt, tools);
+    }
+
+    test('bundled checklist tool can be disabled', () async {
+      final session = buildSession(['planning.checklist.manage']);
+      await session.send('hello');
+      final (prompt, tools) = sent(session);
+      expect(tools, isNot(contains('planning__checklist__manage')));
+      expect(prompt.contains('planning.checklist.manage'), isFalse);
+      expect(prompt.contains('planning'), isFalse);
+    });
+
+    test('disabled tool is not discoverable', () {
+      final session = buildSession(['demo.echo']);
+      expect(session.search.search('echo repeat', k: 5, layer: 3), isEmpty);
+      expect(session.registry.get('demo.echo'), isNull);
+    });
+
+    test('disabled tool cannot be executed', () async {
+      final session = buildSession(['demo.echo'], steps: [
+        DecisionStep(ScriptedLLM.call('demo.echo', arguments: {'text': 'x'})),
+        const TextStep('done'),
+      ]);
+      await session.send('use echo');
+      final observations = session.ledger
+          .iterRun(session.run.id)
+          .where((e) => e.type == 'observation')
+          .map((e) => e.data.toString());
+      expect(observations.any((o) => o.contains('not registered')), isTrue);
+    });
+
+    test('disabling mid-session takes effect on the next turn', () async {
+      final session = buildSession([], steps: [const TextStep('one'), const TextStep('two')]);
+      await session.send('hello');
+      var (prompt, tools) = sent(session);
+      expect(tools, contains('planning__checklist__manage'));
+      expect(prompt.contains('planning.checklist.manage'), isTrue);
+
+      session.registry.disable(['planning.checklist.manage']);
+      await session.send('hello again');
+      (prompt, tools) = sent(session);
+      expect(tools, isNot(contains('planning__checklist__manage')));
+      expect(prompt.contains('planning.checklist.manage'), isFalse);
+    });
+  });
 }

@@ -85,12 +85,22 @@ void main() {
       expect(batch.results[0].observation, contains('not valid JSON'));
     });
 
-    test('unknown capability mentions find_tools', () async {
+    test('unknown capability mentions the search tool when present', () async {
+      final registry = echoRegistry();
+      ensureMetaTools(registry);
+      final (runtime, turn, ctx, run, policy) = makeRuntime(registry);
+      final batch =
+          await runBatch(runtime, [ToolCall(name: 'nope.nope', arguments: {})], turn, ctx, run, policy);
+      expect(batch.results[0].ok, isFalse);
+      expect(batch.results[0].observation, contains('meta.tool.find'));
+    });
+
+    test('unknown capability never advertises an absent search tool', () async {
       final (runtime, turn, ctx, run, policy) = makeRuntime(echoRegistry());
       final batch =
           await runBatch(runtime, [ToolCall(name: 'nope.nope', arguments: {})], turn, ctx, run, policy);
       expect(batch.results[0].ok, isFalse);
-      expect(batch.results[0].observation, contains('find_tools'));
+      expect(batch.results[0].observation, isNot(contains('meta.tool.find')));
     });
   });
 

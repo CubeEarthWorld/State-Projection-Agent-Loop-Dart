@@ -106,11 +106,13 @@ class ToolContext {
 }
 
 class CapabilityCard {
-  CapabilityCard({this.summary = '', this.signature = '', List<String>? tags})
+  CapabilityCard({this.summary = '', List<String>? tags})
       : tags = tags ?? <String>[];
 
   String summary;
-  String signature;
+
+  /// Derived by [Capability.deriveCard]; never authored.
+  String signature = '';
   final List<String> tags;
 }
 
@@ -373,9 +375,13 @@ class Capability {
       ],
     );
     final cardD = (data['card'] as Map?)?.cast<String, Object?>() ?? {};
+    if (cardD.containsKey('signature')) {
+      throw ArgumentError(
+          'Capability "${data['name']}": card.signature is derived from the name and '
+          'parameters, not authored — remove it from the definition');
+    }
     final card = CapabilityCard(
       summary: (cardD['summary'] as String?) ?? '',
-      signature: (cardD['signature'] as String?) ?? '',
       tags: ((cardD['tags'] as List?) ?? []).cast<String>(),
     );
     final discD = (data['discovery'] as Map?)?.cast<String, Object?>() ?? {};
@@ -436,9 +442,10 @@ class Capability {
       final s = _firstSentence(spec.description);
       card.summary = s.isEmpty ? name : s;
     }
-    if (card.signature.isEmpty) {
-      card.signature = synthesizeSignature(name, spec.parameters, spec.returns);
-    }
+    // The signature is always derived, never authored: it is the one line
+    // telling the model how to call this capability, and a hand-written one
+    // drifts from the real name and parameters.
+    card.signature = synthesizeSignature(name, spec.parameters, spec.returns);
   }
 
   /// ~30-token one-liner: enough to call the capability directly.
