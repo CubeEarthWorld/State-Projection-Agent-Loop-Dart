@@ -173,3 +173,18 @@ class WorkingStateSection {
     ];
   }
 }
+
+/// The typed fields of [WorkingState], i.e. the keys `fromDict` understands.
+/// Anything else a caller seeds is app-specific state and belongs in `extra`.
+const Set<String> workingStateFields = {
+  'goal',
+  'acceptance_criteria',
+  'constraints',
+  'confirmed_facts',
+  'decisions',
+  'open_questions',
+  'next_actions',
+  'artifact_refs',
+  'extra',
+  'checklists',
+};

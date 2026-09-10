@@ -113,6 +113,11 @@ class Registry {
   static Capability _coerce(Object capability,
       {Function? handler, bool wantsCtx = false}) {
     if (capability is Capability) {
+      if (handler != null) {
+        throw ArgumentError(
+            'Capability "${capability.name}" already carries its own handler; '
+            'pass a handler only when registering a definition map');
+      }
       return capability;
     }
     if (capability is Map) {

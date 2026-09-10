@@ -138,10 +138,13 @@ class BudgetState {
 // ---------------------------------------------------------------------------
 
 class Runtime {
-  Runtime(this.registry, this.store, this.config);
+  // No artifact store of its own: it uses ctx.store, the session's current
+  // one. A resumed run installs a fresh store for its new run id, and a
+  // second copy captured here would silently keep writing artifacts the
+  // session (and therefore meta.artifact.peek) could no longer read.
+  Runtime(this.registry, this.config);
 
   final Registry registry;
-  final ArtifactStore store;
   final Config config;
 
   // Capabilities whose full spec has already been projected into the
@@ -149,6 +152,11 @@ class Runtime {
   // exempt because their spec is always in the kernel section.
   final Set<String> seenSpecs = {};
   final Map<String, int> _consecutiveValidationFailures = {};
+
+  /// Forget per-capability validation-failure counts. Called on rewind: the
+  /// failures being counted are in the discarded history, so a capability
+  /// must not start the new timeline already one strike from "giving up".
+  void resetValidationFailures() => _consecutiveValidationFailures.clear();
 
   // -- public ---------------------------------------------------------------
 
@@ -224,7 +232,7 @@ class Runtime {
         ));
         return ExecuteBatchResult(results: results, halted: true);
       }
-      if (_isReadOnly(capability)) {
+      if (Runtime.isReadOnly(capability)) {
         buffer.add((call, capability, args));
       } else {
         await flush();
@@ -373,7 +381,7 @@ class Runtime {
     return (capability, args);
   }
 
-  static bool _isReadOnly(Capability capability) {
+  static bool isReadOnly(Capability capability) {
     // Mirrors PolicyEngine.evaluate: undeclared effects are treated as the
     // most restrictive kind, so an author who forgot to declare effects
     // doesn't also get free parallel execution.
@@ -409,7 +417,7 @@ class Runtime {
       );
     }
     final resolved = capability.execution.resolveHandles
-        ? (store.resolveArgs(args) as Map).cast<String, Object?>()
+        ? ((ctx.store! as ArtifactStore).resolveArgs(args) as Map).cast<String, Object?>()
         : args;
     final attempts = capability.execution.retries + 1 < 1 ? 1 : capability.execution.retries + 1;
     final start = _now();
@@ -421,7 +429,7 @@ class Runtime {
         final value = await _invoke(handler, capability, resolved, callCtx)
             .timeout(Duration(milliseconds: (capability.execution.timeoutS * 1000).round()));
         final elapsed = _now() - start;
-        final (observation, artifactId) = _observationFor(capability, value);
+        final (observation, artifactId) = _observationFor(capability, value, ctx.store! as ArtifactStore);
         run.recordOutcome(command, 'ok', resultRef: artifactId);
         return ToolResult(
           call: call,
@@ -481,7 +489,8 @@ class Runtime {
 
   // -- output policy --------------------------------------------------------
 
-  (String, String?) _observationFor(Capability capability, Object? value) {
+  (String, String?) _observationFor(
+      Capability capability, Object? value, ArtifactStore store) {
     final text = serializeValue(value);
     final policy = capability.execution.outputPolicy;
     final threshold = policy.maxInlineTokens ?? config.artifacts.inlineThresholdTokens;
@@ -498,9 +507,10 @@ class Runtime {
       preview: policy.preview,
       previewTokens: config.artifacts.previewTokens,
     );
-    return (
-      '$refText\nUse peek(artifact={"\$artifact": "${record.id}"}, query=..., range=...) to inspect further.',
-      record.id,
-    );
+    final hint = registry.contains('meta.artifact.peek')
+        ? '\nUse meta.artifact.peek(artifact={"\$artifact": "${record.id}"}, '
+            'query=..., range=...) to inspect further.'
+        : '';
+    return ('$refText$hint', record.id);
   }
 }

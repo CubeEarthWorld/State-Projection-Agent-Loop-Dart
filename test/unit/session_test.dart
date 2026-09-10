@@ -7,6 +7,7 @@
 // (send/runJob/resume/invoke), never a sync wrapper around an event loop,
 // so there is no "sync call inside a running loop" failure mode to test.
 import 'dart:async';
+import 'dart:io';
 
 import 'package:state_projection_loop/state_projection_loop.dart';
 import 'package:test/test.dart';
@@ -400,6 +401,111 @@ void main() {
       (prompt, tools) = sent(session);
       expect(tools, isNot(contains('planning__checklist__manage')));
       expect(prompt.contains('planning.checklist.manage'), isFalse);
+    });
+  });
+  group('resumed run artifacts', () {
+    // A resumed run installs a fresh ArtifactStore for its new run id. The
+    // runtime must write into that one, not into a copy captured when it was
+    // constructed, or every artifact produced after the resume becomes
+    // unreachable to meta.artifact.peek.
+    test('artifacts produced after resume are readable', () async {
+      final dir = Directory.systemTemp.createTempSync('spal_resume_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final registry = Registry();
+      registry.register(
+        capabilityDict('demo.big', properties: {}, maxInlineTokens: 1),
+        handler: (Map<String, Object?> args) => 'x' * 4000,
+      );
+      final config = Config.fromMap({
+        'mode': 'job',
+        'persistence': {'ledger_directory': dir.path},
+        'artifacts': {'directory': '${dir.path}/artifacts'},
+      });
+      final first = Session(ScriptedLLM([DecisionStep(ScriptedLLM.finish('ok'))]),
+          registry: registry, config: config, policy: allowAllPolicy());
+      await first.runJob('nothing');
+
+      final resumed = Session.resumeFromLedger(
+        ScriptedLLM([
+          DecisionStep(ScriptedLLM.call('demo.big')),
+          DecisionStep(ScriptedLLM.finish('done')),
+        ]),
+        first.run.id,
+        config: config,
+        registry: registry,
+        policy: allowAllPolicy(),
+      );
+      resumed.run.state = 'RUNNING';
+      await resumed.runJob('make a big result');
+
+      final observations = resumed.ledger
+          .iterRun(resumed.run.id)
+          .where((e) => e.type == 'observation')
+          .map((e) => e.data['text'].toString())
+          .join('\n');
+      final ids = RegExp(r'art_[0-9A-Z]+').allMatches(observations).map((m) => m[0]!).toList();
+      expect(ids, isNotEmpty, reason: 'expected the oversized result to become an artifact');
+      expect(isRef({r'$artifact': ids.first}), isTrue);
+      // The store the session hands to meta.artifact.peek must be the one the
+      // runtime just wrote to.
+      expect(resumed.store.peek(ids.first), contains('xxx'));
+    });
+  });
+
+  group('state tools declare their writes', () {
+    // state.* mutates the working state, so it must not be declared as
+    // effect-free: the runtime uses that declaration to decide what may run
+    // concurrently, and a mislabelled write loses the model's stated order.
+    test('mutating state tools are not read-only', () {
+      final registry = Registry();
+      installState(registry);
+      final mutating = registry
+          .all()
+          .where((c) => c.name.startsWith('state.') && !c.name.endsWith('.get'))
+          .toList();
+      expect(mutating, isNotEmpty);
+      for (final capability in mutating) {
+        expect(Runtime.isReadOnly(capability), isFalse,
+            reason: '${capability.name} claims to be read-only');
+      }
+    });
+
+    test('state writes are auto-allowed by the default policy', () {
+      final registry = Registry();
+      installState(registry);
+      final session = Session(ScriptedLLM([]), registry: registry); // default (auto_safe) policy
+      final capability = session.registry.get('state.goal.set')!;
+      expect(session.policy.evaluate(capability, {'text': 'x'}).decision, equals('allow'));
+    });
+  });
+
+  group('seeding', () {
+    test('seeded decisions survive a round trip', () {
+      final session = Session(ScriptedLLM([]), seed: {
+        'goal': 'g',
+        'decisions': [
+          {'text': 'use sqlite', 'reason': 'single writer'},
+        ],
+      });
+      expect(session.workingState.toDict()['decisions'], equals([
+        {'text': 'use sqlite', 'reason': 'single writer'},
+      ]));
+    });
+
+    test('seeded extra is not nested under itself', () {
+      final session = Session(ScriptedLLM([]), seed: {
+        'extra': {'flags': <String, Object?>{}},
+      });
+      expect(session.workingState.extra, equals({'flags': <String, Object?>{}}));
+    });
+
+    test('unknown keys fall back to extra', () {
+      final session = Session(ScriptedLLM([]), seed: {
+        'campaign': {'chapter': 2},
+      });
+      expect(session.workingState.extra, equals({
+        'campaign': {'chapter': 2},
+      }));
     });
   });
 }

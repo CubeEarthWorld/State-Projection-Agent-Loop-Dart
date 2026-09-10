@@ -202,8 +202,13 @@ class PolicyEngine {
     }
     clearLayer(layer);
     if (preset == 'auto_safe' || preset == 'auto_workspace_dev') {
+      // Writes confined to the session's own working state never leave the
+      // process, so they are auto-allowed; they are declared as writes so
+      // the runtime keeps them in the model's stated order.
       addRule(layer, Rule(decision: 'allow', capabilityPattern: 'planning.checklist.manage',
           effectKind: 'write', resourcePattern: 'working_state:checklists', reason: 'preset:local_checklists'));
+      addRule(layer, Rule(decision: 'allow', capabilityPattern: 'state.*',
+          effectKind: 'write', resourcePattern: 'working_state:*', reason: 'preset:local_working_state'));
     }
     switch (preset) {
       case 'deny_all':

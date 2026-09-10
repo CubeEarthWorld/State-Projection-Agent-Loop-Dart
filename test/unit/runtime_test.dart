@@ -19,7 +19,7 @@ import 'package:state_projection_loop/src/json_schema.dart' show miniValidate;
 }) {
   final cfg = config ?? Config();
   final store = ArtifactStore('run_test');
-  final runtime = Runtime(registry, store, cfg);
+  final runtime = Runtime(registry, cfg);
   final ledger = InMemoryLedger();
   final run = Run('run_test', 'ses_test', ledger);
   final policy = PolicyEngine(defaultDecision: allowAll ? 'allow' : 'require_approval');

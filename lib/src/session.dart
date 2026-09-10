@@ -92,12 +92,21 @@ class Session {
           extra: extraSections,
         );
     projection = Projection(sectionList, windowTokens: this.config.projection.windowTokens);
-    runtime = Runtime(this.registry, store, this.config);
+    runtime = Runtime(this.registry, this.config);
 
-    workingState = WorkingState();
-    for (final entry in (seed ?? {}).entries) {
-      _seedWorkingState(entry.key, entry.value);
-    }
+    // Typed fields go through the same parser snapshots use, so a seeded
+    // `decisions` becomes RecordedDecision objects rather than raw maps that
+    // blow up on the next toDict(). Anything else is app-specific state and
+    // lands in `extra`, the documented escape hatch.
+    final seedMap = seed ?? const <String, Object?>{};
+    workingState = WorkingState.fromDict({
+      for (final e in seedMap.entries)
+        if (workingStateFields.contains(e.key)) e.key: e.value,
+    });
+    workingState.extra.addAll({
+      for (final e in seedMap.entries)
+        if (!workingStateFields.contains(e.key)) e.key: e.value,
+    });
 
     budget = BudgetState();
 
@@ -131,39 +140,6 @@ class Session {
   int _idleTurns = 0;
   bool _budgetGraceUsed = false;
   bool _locked = false;
-
-  void _seedWorkingState(String key, Object? value) {
-    if (key == 'checklists') {
-      workingState.checklists = ChecklistStore.fromDict(value);
-      return;
-    }
-    switch (key) {
-      case 'goal':
-        workingState.goal = value?.toString() ?? '';
-      case 'acceptance_criteria':
-        workingState.acceptanceCriteria
-          ..clear()
-          ..addAll(((value as List?) ?? []).cast<String>());
-      case 'constraints':
-        workingState.constraints
-          ..clear()
-          ..addAll(((value as List?) ?? []).cast<String>());
-      case 'confirmed_facts':
-        workingState.confirmedFacts
-          ..clear()
-          ..addAll(((value as List?) ?? []).cast<String>());
-      case 'open_questions':
-        workingState.openQuestions = ((value as List?) ?? []).cast<String>();
-      case 'next_actions':
-        workingState.nextActions = ((value as List?) ?? []).cast<String>();
-      case 'artifact_refs':
-        workingState.artifactRefs
-          ..clear()
-          ..addAll(((value as List?) ?? []).cast<String>());
-      default:
-        workingState.extra[key] = value;
-    }
-  }
 
   static PolicyEngine _defaultPolicy() {
     final engine = PolicyEngine(defaultDecision: 'require_approval');
@@ -689,6 +665,7 @@ class Session {
     _budgetGraceUsed = false;
     _active.clear();
     runtime.seenSpecs.clear();
+    runtime.resetValidationFailures();
     _snapshot();
 
     return irreversible;
