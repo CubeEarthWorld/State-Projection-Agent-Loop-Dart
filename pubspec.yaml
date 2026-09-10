@@ -2,7 +2,7 @@ name: state_projection_loop
 description: >
   State-Projection Agent Loop: a projection-based LLM agent runtime. Truth
   lives outside the context; every turn renders a minimal disposable view.
-version: 0.2.0
+version: 0.4.0
 homepage: https://github.com/mosimosi/State-Projection-Agent-Loop
 repository: https://github.com/mosimosi/State-Projection-Agent-Loop-Dart
 

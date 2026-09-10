@@ -9,6 +9,7 @@ library;
 export 'src/artifacts.dart' show ArtifactStore, ArtifactRecord, ref, isRef, refKey;
 export 'src/builtin/meta.dart' show ensureMetaTools, installSpawn;
 export 'src/builtin/state.dart' show installState;
+export 'src/checklists.dart' show ChecklistStore, checklistStatuses, checklistContextModes;
 export 'src/capability.dart'
     show
         Capability,
@@ -77,6 +78,7 @@ export 'src/projection.dart'
         TocSection,
         HistorySection,
         CandidatesSection,
+        ChecklistSection,
         buildDefaultSections;
 export 'src/registry.dart' show Registry, ToolProvider;
 export 'src/run.dart'
@@ -94,4 +96,4 @@ export 'src/session.dart' show Session, ConcurrencyError;
 export 'src/tokens.dart' show estimateTokens, estimateTextTokens, setEstimator, resetEstimator;
 export 'src/working_state.dart' show WorkingState, WorkingStateSection, RecordedDecision;
 
-const String packageVersion = '0.3.0';
+const String packageVersion = '0.4.0';

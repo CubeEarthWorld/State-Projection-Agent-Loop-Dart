@@ -40,6 +40,7 @@ const List<String> eventTypes = [
   'observation',
   'checkpoint',
   'rewound',
+  'checklists_changed',
 ];
 
 const List<String> renderableTypes = ['user_input', 'model_response', 'observation', 'notice'];

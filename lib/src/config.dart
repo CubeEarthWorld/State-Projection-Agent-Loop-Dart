@@ -12,7 +12,7 @@ class ProjectionConfig {
     this.providerOverheadTokens = 0,
     this.dedupeCandidateCardsAgainstSchemas = true,
   }) : sections =
-            sections ?? ['kernel', 'toc', 'history', 'working_state', 'candidates'];
+            sections ?? ['kernel', 'toc', 'history', 'working_state', 'checklists', 'candidates'];
 
   // "toc" is a separate epoch-cached section: the kernel stays immutable
   // while the tool index may change mid-session.

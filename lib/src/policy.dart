@@ -201,6 +201,10 @@ class PolicyEngine {
       throw ArgumentError('Unknown preset "$preset"; expected one of $presets');
     }
     clearLayer(layer);
+    if (preset == 'auto_safe' || preset == 'auto_workspace_dev') {
+      addRule(layer, Rule(decision: 'allow', capabilityPattern: 'planning.checklist.manage',
+          effectKind: 'write', resourcePattern: 'working_state:checklists', reason: 'preset:local_checklists'));
+    }
     switch (preset) {
       case 'deny_all':
         addRule(layer, Rule(decision: 'deny', reason: 'preset:deny_all'));

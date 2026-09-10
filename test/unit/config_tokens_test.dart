@@ -10,7 +10,7 @@ void main() {
       expect(cfg.projection.windowTokens, equals(30000));
       expect(
         cfg.projection.sections,
-        equals(['kernel', 'toc', 'history', 'working_state', 'candidates']),
+        equals(['kernel', 'toc', 'history', 'working_state', 'checklists', 'candidates']),
       );
       expect(cfg.discovery.vector, equals('auto'));
       expect(cfg.discovery.k, equals(8));

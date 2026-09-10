@@ -20,6 +20,7 @@ import 'dart:convert';
 
 import 'messages.dart';
 import 'tokens.dart';
+import 'checklists.dart';
 
 class RecordedDecision {
   RecordedDecision({required this.text, this.reason = ''});
@@ -46,6 +47,7 @@ class WorkingState {
     List<String>? nextActions,
     List<String>? artifactRefs,
     Map<String, Object?>? extra,
+    ChecklistStore? checklists,
   })  : acceptanceCriteria = acceptanceCriteria ?? <String>[],
         constraints = constraints ?? <String>[],
         confirmedFacts = confirmedFacts ?? <String>[],
@@ -53,7 +55,8 @@ class WorkingState {
         openQuestions = openQuestions ?? <String>[],
         nextActions = nextActions ?? <String>[],
         artifactRefs = artifactRefs ?? <String>[],
-        extra = extra ?? <String, Object?>{};
+        extra = extra ?? <String, Object?>{},
+        checklists = checklists ?? ChecklistStore();
 
   String goal;
   final List<String> acceptanceCriteria;
@@ -68,6 +71,7 @@ class WorkingState {
   // `extra` are the same three as before: user code, the LLM (via the
   // state.extra.* capabilities), and the session seed.
   final Map<String, Object?> extra;
+  ChecklistStore checklists;
 
   bool isEmpty() =>
       goal.isEmpty &&
@@ -78,7 +82,7 @@ class WorkingState {
       openQuestions.isEmpty &&
       nextActions.isEmpty &&
       artifactRefs.isEmpty &&
-      extra.isEmpty;
+      extra.isEmpty && checklists.isEmpty;
 
   Map<String, Object?> toDict() => {
         'goal': goal,
@@ -90,6 +94,7 @@ class WorkingState {
         'next_actions': List<String>.from(nextActions),
         'artifact_refs': List<String>.from(artifactRefs),
         'extra': Map<String, Object?>.from(extra),
+        'checklists': checklists.toDict(),
       };
 
   factory WorkingState.fromDict(Map<String, Object?> d) => WorkingState(
@@ -105,6 +110,7 @@ class WorkingState {
         nextActions: ((d['next_actions'] as List?) ?? []).cast<String>(),
         artifactRefs: ((d['artifact_refs'] as List?) ?? []).cast<String>(),
         extra: (d['extra'] as Map?)?.cast<String, Object?>() ?? {},
+        checklists: d.containsKey('checklists') ? ChecklistStore.fromDict(d['checklists']) : ChecklistStore(),
       );
 
   String render({int maxTokens = 800}) {
@@ -157,10 +163,12 @@ class WorkingStateSection {
   List<Message> render(Object? turn) {
     final ws = (turn as dynamic).workingState as WorkingState?;
     if (ws == null || ws.isEmpty()) return const [];
+    final body = ws.render(maxTokens: maxTokens);
+    if (body.isEmpty) return const [];
     return [
       Message(
         role: kSystem,
-        content: '[Working state]\n${ws.render(maxTokens: maxTokens)}',
+        content: '[Working state]\n$body',
       ),
     ];
   }

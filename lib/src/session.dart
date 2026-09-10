@@ -13,6 +13,8 @@ import 'dart:io';
 
 import 'artifacts.dart';
 import 'builtin/meta.dart' show ensureMetaTools;
+import 'builtin/checklist.dart' show ensureChecklistTool;
+import 'checklists.dart';
 import 'capability.dart';
 import 'config.dart';
 import 'discovery.dart';
@@ -70,6 +72,7 @@ class Session {
   })  : config = config ?? Config(),
         registry = registry ?? Registry() {
     ensureMetaTools(this.registry);
+    ensureChecklistTool(this.registry);
 
     sessionId = newId('session');
     this.ledger = ledger ?? _makeLedger(this.config);
@@ -104,6 +107,7 @@ class Session {
     _active = LinkedHashSet<String>.from(pinned.map((c) => c.name));
     this.ledger.append(
         run.id, 'run_state_changed', {'from': 'RUNNING', 'to': 'RUNNING', 'reason': 'created'});
+    _snapshot();
   }
 
   final LLMAdapter llm;
@@ -120,6 +124,7 @@ class Session {
   late final Projection projection;
   late final Runtime runtime;
   late WorkingState workingState;
+  ChecklistStore get checklists => workingState.checklists;
   late BudgetState budget;
   late final LinkedHashSet<String> _active;
   bool _interrupted = false;
@@ -128,6 +133,10 @@ class Session {
   bool _locked = false;
 
   void _seedWorkingState(String key, Object? value) {
+    if (key == 'checklists') {
+      workingState.checklists = ChecklistStore.fromDict(value);
+      return;
+    }
     switch (key) {
       case 'goal':
         workingState.goal = value?.toString() ?? '';
@@ -279,6 +288,7 @@ class Session {
       'parent_session_id': sessionId,
       'at_message': cut,
     });
+    newSession._snapshot();
     return (newSession, _irreversibleEffects());
   }
 
@@ -334,6 +344,11 @@ class Session {
     session.sessionId = (snapshot.state['session_id'] as String?) ?? session.sessionId;
     session.workingState =
         WorkingState.fromDict((snapshot.state['working_state'] as Map?)?.cast<String, Object?>() ?? {});
+    for (final event in ledger.iterRun(runId, after: snapshot.sequence)) {
+      if (event.type == 'checklists_changed') {
+        session.workingState.checklists = ChecklistStore.fromDict(event.data['checklists']);
+      }
+    }
     final budgetData = (snapshot.state['budget'] as Map?)?.cast<String, Object?>() ?? {};
     session.budget = BudgetState(
       steps: (budgetData['steps'] as num?)?.toInt() ?? 0,
@@ -685,6 +700,7 @@ class Session {
     _active.addAll(registry.pinned().map((c) => c.name));
     runtime.seenSpecs.clear();
     runtime.seenSpecs.addAll(registry.pinned().map((c) => c.name));
+    _snapshot();
 
     return irreversible;
   }

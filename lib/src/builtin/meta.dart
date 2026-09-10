@@ -183,7 +183,7 @@ final Map<String, Object?> spawnDef = {
   'spec': {
     'description':
         'Run a sub-agent with its own independent context on the given task. Parent and child share '
-            'ONLY the task string (input) and the result (output); artifacts must be explicitly moved.',
+            'the task string and result, plus explicitly selected checklist_ids as independent copies; artifacts must be explicitly moved.',
     'parameters': {
       'type': 'object',
       'properties': {
@@ -202,6 +202,8 @@ final Map<String, Object?> spawnDef = {
           'description': '子で使うモデル名(spawn_llm_factory が必要)',
         },
         'max_steps': {'type': 'integer', 'default': 15, 'minimum': 1, 'maximum': 100},
+        'checklist_ids': {'type': 'array', 'items': {'type': 'string'},
+          'description': 'Explicitly copy these checklist ULIDs to the child. Returns result plus a checklists export document. Parent plans are never auto-merged.'},
       },
       'required': ['task'],
     },
@@ -220,6 +222,7 @@ Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
   final toolScope = (args['tool_scope'] as List?)?.cast<String>();
   final model = args['model'] as String?;
   final maxSteps = (args['max_steps'] as num?)?.toInt() ?? 15;
+  final checklistIds = (args['checklist_ids'] as List?)?.cast<String>();
 
   final parent = ctx.session;
   if (parent is! Session) {
@@ -228,6 +231,11 @@ Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
   if (model != null && parent.spawnLlmFactory == null) {
     throw StateError('spawn(model=...) requires Session(spawnLlmFactory: ...)');
   }
+  if (checklistIds != null && checklistIds.toSet().length != checklistIds.length) {
+    throw ArgumentError('Duplicate checklist_ids');
+  }
+  final documents = [for (final id in checklistIds ?? <String>[])
+    ((parent.checklists.execute('export', {'id': id}) as Map)['checklists'] as List).single];
   final llm = parent.spawnLlmFactory != null ? parent.spawnLlmFactory!(model) : parent.llm;
 
   Registry childRegistry;
@@ -254,9 +262,12 @@ Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
     config: childConfig,
     registry: childRegistry,
     embedder: parent.search.embedder,
+    seed: {'checklists': {'version': 1, 'checklists': documents}},
     policy: parent.policy,
   );
-  return await child.runJob(task);
+  final result = await child.runJob(task);
+  if (checklistIds != null) return {'result': result, 'checklists': child.checklists.toDict()};
+  return result;
 }
 
 /// Register the resident meta capabilities if absent.
