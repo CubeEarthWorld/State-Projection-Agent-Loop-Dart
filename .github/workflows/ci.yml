@@ -15,6 +15,10 @@ jobs:
           sdk: stable
       - name: Install
         run: dart pub get
+      - name: Generated definitions are up to date
+        run: |
+          dart run tool/generate_defs.dart
+          git diff --exit-code lib/src/builtin/defs.g.dart
       - name: Analyze
         run: dart analyze --fatal-infos
       - name: Test

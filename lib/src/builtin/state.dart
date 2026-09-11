@@ -13,6 +13,7 @@ import '../capability.dart';
 import '../registry.dart';
 import '../working_state.dart';
 import '../serialization.dart';
+import 'defs.g.dart';
 
 (Map<String, Object?>, String) _walkExtra(Map<String, Object?> extra, String path,
     {bool create = false}) {
@@ -98,180 +99,6 @@ Object? _extraGet(ToolContext ctx, Map<String, Object?> args) {
   }
 }
 
-final List<Map<String, Object?>> stateCapabilityDefs = [
-  {
-    'name': 'state.goal.set',
-    'category': 'state',
-    'spec': {
-      'description': '現在の目標(ゴール)を設定する。working_stateとcandidate検索クエリに反映される。',
-      'parameters': {
-        'type': 'object',
-        'properties': {
-          'text': {'type': 'string'},
-        },
-        'required': ['text'],
-      },
-    },
-    'discovery': {'embedding_text': '目標 ゴール クリア条件 目的 goal objective'},
-    'execution': {'timeout_s': 5, 'retry_safety': 'idempotent'},
-    'effects': [
-      {'kind': 'write', 'resource': 'working_state:*'},
-    ],
-  },
-  {
-    'name': 'state.fact.add',
-    'category': 'state',
-    'spec': {
-      'description': '確認済みの事実・ユーザーの制約を working_state に追記する。',
-      'parameters': {
-        'type': 'object',
-        'properties': {
-          'text': {'type': 'string'},
-        },
-        'required': ['text'],
-      },
-    },
-    'discovery': {'embedding_text': '事実 記録 確認 remember fact constraint'},
-    'execution': {'timeout_s': 5, 'retry_safety': 'idempotent'},
-    'effects': [
-      {'kind': 'write', 'resource': 'working_state:*'},
-    ],
-  },
-  {
-    'name': 'state.constraint.add',
-    'category': 'state',
-    'spec': {
-      'description': '制約を working_state に追記する。',
-      'parameters': {
-        'type': 'object',
-        'properties': {
-          'text': {'type': 'string'},
-        },
-        'required': ['text'],
-      },
-    },
-    'execution': {'timeout_s': 5, 'retry_safety': 'idempotent'},
-    'effects': [
-      {'kind': 'write', 'resource': 'working_state:*'},
-    ],
-  },
-  {
-    'name': 'state.decision.record',
-    'category': 'state',
-    'spec': {
-      'description': '判断とその理由を working_state.decisions に記録する。理由は必ず埋めること。',
-      'parameters': {
-        'type': 'object',
-        'properties': {
-          'text': {'type': 'string'},
-          'reason': {'type': 'string', 'default': ''},
-        },
-        'required': ['text'],
-      },
-    },
-    'discovery': {'embedding_text': '判断 決定 理由 decision reason record'},
-    'execution': {'timeout_s': 5, 'retry_safety': 'idempotent'},
-    'effects': [
-      {'kind': 'write', 'resource': 'working_state:*'},
-    ],
-  },
-  {
-    'name': 'state.question.add',
-    'category': 'state',
-    'spec': {
-      'description': '未解決の疑問を working_state.open_questions に追加する。',
-      'parameters': {
-        'type': 'object',
-        'properties': {
-          'text': {'type': 'string'},
-        },
-        'required': ['text'],
-      },
-    },
-    'execution': {'timeout_s': 5, 'retry_safety': 'idempotent'},
-    'effects': [
-      {'kind': 'write', 'resource': 'working_state:*'},
-    ],
-  },
-  {
-    'name': 'state.question.resolve',
-    'category': 'state',
-    'spec': {
-      'description': 'working_state.open_questions から該当項目を削除する(完全一致)。',
-      'parameters': {
-        'type': 'object',
-        'properties': {
-          'text': {'type': 'string'},
-        },
-        'required': ['text'],
-      },
-    },
-    'execution': {'timeout_s': 5, 'retry_safety': 'idempotent'},
-    'effects': [
-      {'kind': 'write', 'resource': 'working_state:*'},
-    ],
-  },
-  {
-    'name': 'state.next_actions.set',
-    'category': 'state',
-    'spec': {
-      'description': 'working_state.next_actions を丸ごと置き換える。',
-      'parameters': {
-        'type': 'object',
-        'properties': {
-          'actions': {
-            'type': 'array',
-            'items': {'type': 'string'},
-          },
-        },
-        'required': ['actions'],
-      },
-    },
-    'execution': {'timeout_s': 5, 'retry_safety': 'idempotent'},
-    'effects': [
-      {'kind': 'write', 'resource': 'working_state:*'},
-    ],
-  },
-  {
-    'name': 'state.extra.set',
-    'category': 'state',
-    'spec': {
-      'description': 'working_state.extra にパス指定で任意のアプリ固有状態(フラグ・変数)を書き込む。',
-      'parameters': {
-        'type': 'object',
-        'properties': {
-          'path': {'type': 'string'},
-          'value': {'description': '任意のJSON値'},
-        },
-        'required': ['path', 'value'],
-      },
-    },
-    'discovery': {'embedding_text': '状態 変数 フラグ 保存 記録 セット flag variable'},
-    'execution': {'timeout_s': 5, 'retry_safety': 'idempotent'},
-    'effects': [
-      {'kind': 'write', 'resource': 'working_state:*'},
-    ],
-  },
-  {
-    'name': 'state.extra.get',
-    'category': 'state',
-    'spec': {
-      'description': 'working_state.extra からパス指定で値を読む。',
-      'parameters': {
-        'type': 'object',
-        'properties': {
-          'path': {'type': 'string'},
-        },
-        'required': ['path'],
-      },
-    },
-    'execution': {'timeout_s': 5, 'retry_safety': 'pure'},
-    'effects': [
-      {'kind': 'read', 'resource': 'working_state:*'},
-    ],
-  },
-];
-
 final Map<String, CtxHandler> stateHandlers = {
   'state.goal.set': _setGoal,
   'state.fact.add': _addFact,
@@ -292,10 +119,11 @@ final Map<String, CtxHandler> stateHandlers = {
 /// only for `session.registry`), which also avoids an import cycle with
 /// `session.dart`.
 void installState(Registry registry) {
-  for (final definition in stateCapabilityDefs) {
-    final name = definition['name'] as String;
+  for (final definition in load('state') as List) {
+    final map = (definition as Map).cast<String, Object?>();
+    final name = map['name'] as String;
     if (!registry.contains(name)) {
-      registry.register(definition, handler: stateHandlers[name], wantsCtx: true);
+      registry.register(map, handler: stateHandlers[name], wantsCtx: true);
     }
   }
 }

@@ -9,7 +9,12 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:state_projection_loop/src/builtin/checklist.dart';
+import 'package:state_projection_loop/src/builtin/defs.g.dart' as defs;
+import 'package:state_projection_loop/src/builtin/meta.dart';
+import 'package:state_projection_loop/src/builtin/state.dart';
 import 'package:state_projection_loop/src/capability.dart';
+import 'package:state_projection_loop/src/registry.dart';
 import 'package:state_projection_loop/src/compression.dart';
 import 'package:state_projection_loop/src/policy.dart';
 import 'package:state_projection_loop/src/serialization.dart';
@@ -84,5 +89,31 @@ void main() {
         expect(estimateTokens(c['value']), equals(c['expected']));
       });
     }
+  });
+  group('bundled tool definitions', () {
+    // The definitions are data shared with the Python package. They are
+    // embedded as a generated constant because Dart cannot portably read a
+    // package's own data files at runtime — so the constant must stay in
+    // step with the JSON it was generated from.
+    for (final name in ['meta', 'spawn', 'state', 'checklist']) {
+      test('$name matches spec/tools/$name.json', () {
+        final onDisk = jsonDecode(File('spec/tools/$name.json').readAsStringSync());
+        expect(jsonEncode(defs.load(name)), equals(jsonEncode(onDisk)),
+            reason: 'run: dart run tool/generate_defs.dart');
+      });
+    }
+
+    test('every definition has a handler', () {
+      final registry = Registry();
+      ensureMetaTools(registry);
+      ensureChecklistTool(registry);
+      installSpawn(registry);
+      installState(registry);
+      expect(registry.all(), isNotEmpty);
+      for (final capability in registry.all()) {
+        expect(capability.execution.handler, isNotNull,
+            reason: '${capability.name} would fail at call time with no_handler');
+      }
+    });
   });
 }

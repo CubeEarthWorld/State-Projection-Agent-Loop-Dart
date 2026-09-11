@@ -18,37 +18,7 @@ import '../registry.dart';
 import '../serialization.dart';
 import '../run.dart' show Run;
 import '../session.dart';
-
-final Map<String, Object?> findToolsDef = {
-  'name': 'meta.tool.find',
-  'category': 'meta',
-  'card': {
-    'summary': 'ツール台帳を自然文で検索し、該当ツールのカード一覧を返す',
-    'tags': ['meta', '検索'],
-  },
-  'spec': {
-    'description':
-        'Search the capability registry with a natural-language query and return matching cards.',
-    'parameters': {
-      'type': 'object',
-      'properties': {
-        'query': {'type': 'string', 'description': 'やりたいことを自然文で'},
-        'category': {
-          'type': ['string', 'null'],
-          'description': '目次のカテゴリで絞り込み',
-        },
-        'k': {'type': 'integer', 'default': 8, 'minimum': 1, 'maximum': 50},
-      },
-      'required': ['query'],
-    },
-    'usage_notes': '自動候補に必要なツールが見当たらない時に使う。目次のカテゴリ名で絞れる。',
-  },
-  'discovery': {'pinned': true, 'no_embed': true},
-  'execution': {'timeout_s': 10, 'retry_safety': 'pure'},
-  'effects': [
-    {'kind': 'none'},
-  ],
-};
+import 'defs.g.dart';
 
 Object? _findTools(ToolContext ctx, Map<String, Object?> args) {
   final query = args['query'] as String;
@@ -75,40 +45,6 @@ Object? _findTools(ToolContext ctx, Map<String, Object?> args) {
   ];
 }
 
-final Map<String, Object?> peekDef = {
-  'name': 'meta.artifact.peek',
-  'category': 'meta',
-  'card': {
-    'summary': 'アーティファクト参照の中身を部分閲覧する',
-    'tags': ['meta', '参照'],
-  },
-  'spec': {
-    'description':
-        'Partially inspect the value stored behind an artifact reference ({"\$artifact": "..."}).',
-    'parameters': {
-      'type': 'object',
-      'properties': {
-        'artifact': {'type': 'object', 'description': '構造化参照 {"\$artifact": "art_..."}'},
-        'query': {
-          'type': ['string', 'null'],
-          'description': '中身から探したい内容',
-        },
-        'range': {
-          'type': ['string', 'null'],
-          'description': "行範囲(例 '10-40')やキーパス(例 'items[0].name')",
-        },
-      },
-      'required': ['artifact'],
-    },
-    'usage_notes': 'プレビューで足りない時のみ使う。全量展開は避け、queryかrangeで絞る。',
-  },
-  'discovery': {'pinned': true, 'no_embed': true},
-  'execution': {'timeout_s': 10, 'retry_safety': 'pure', 'resolve_handles': false},
-  'effects': [
-    {'kind': 'none'},
-  ],
-};
-
 String _peek(ToolContext ctx, Map<String, Object?> args) {
   final artifact = args['artifact'];
   final query = args['query'] as String?;
@@ -119,33 +55,6 @@ String _peek(ToolContext ctx, Map<String, Object?> args) {
   final store = ctx.store as ArtifactStore;
   return store.peek((artifact as Map)[refKey] as String, query: query, range: range);
 }
-
-final Map<String, Object?> searchHistoryDef = {
-  'name': 'meta.history.search',
-  'category': 'meta',
-  'card': {
-    'summary': '折り畳まれた過去の会話をイベント台帳から検索する',
-    'tags': ['meta', '検索', '履歴'],
-  },
-  'spec': {
-    'description':
-        'Search the append-only event ledger for this run, including messages folded out of the '
-            'live conversation by compaction. Use when working_state doesn\'t have enough detail.',
-    'parameters': {
-      'type': 'object',
-      'properties': {
-        'query': {'type': 'string'},
-        'k': {'type': 'integer', 'default': 10, 'minimum': 1, 'maximum': 50},
-      },
-      'required': ['query'],
-    },
-  },
-  'discovery': {'pinned': true, 'no_embed': true},
-  'execution': {'timeout_s': 10, 'retry_safety': 'pure'},
-  'effects': [
-    {'kind': 'none'},
-  ],
-};
 
 Object? _searchHistory(ToolContext ctx, Map<String, Object?> args) {
   final query = args['query'] as String;
@@ -167,49 +76,6 @@ Object? _searchHistory(ToolContext ctx, Map<String, Object?> args) {
   }
   return hits.isNotEmpty ? hits : ['No ledger events matched "$query".'];
 }
-
-final Map<String, Object?> spawnDef = {
-  'name': 'meta.agent.spawn',
-  'category': 'meta',
-  'card': {
-    'summary': 'サブエージェントを起動しタスクを委任、結果アーティファクトを受け取る',
-    'tags': ['meta', 'swarm', 'サブエージェント'],
-  },
-  'spec': {
-    'description':
-        'Run a sub-agent with its own independent context on the given task. Parent and child share '
-            'the task string and result, plus explicitly selected checklist_ids as independent copies; artifacts must be explicitly moved.',
-    'parameters': {
-      'type': 'object',
-      'properties': {
-        'task': {'type': 'string', 'description': '委任するタスクの完全な記述(子は親の文脈を一切見られない)'},
-        'kernel': {
-          'type': ['string', 'null'],
-          'description': '子のシステムプロンプト(省略時は汎用ジョブカーネル)',
-        },
-        'tool_scope': {
-          'type': ['array', 'null'],
-          'items': {'type': 'string'},
-          'description': "子に許可するツール名/カテゴリ(例 ['web/*','file'])。省略時は親と同じ台帳",
-        },
-        'model': {
-          'type': ['string', 'null'],
-          'description': '子で使うモデル名(spawn_llm_factory が必要)',
-        },
-        'max_steps': {'type': 'integer', 'default': 15, 'minimum': 1, 'maximum': 100},
-        'checklist_ids': {'type': 'array', 'items': {'type': 'string'},
-          'description': 'Explicitly copy these checklist ULIDs to the child. Returns result plus a checklists export document. Parent plans are never auto-merged.'},
-      },
-      'required': ['task'],
-    },
-    'usage_notes': '自己完結したタスクの記述を渡すこと。親の会話内容は共有されない。',
-  },
-  'discovery': {'pinned': true, 'no_embed': true},
-  'execution': {'timeout_s': 600, 'retry_safety': 'never_retry'},
-  'effects': [
-    {'kind': 'external', 'resource': 'subagent:*'},
-  ],
-};
 
 Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
   final task = args['task'] as String;
@@ -265,22 +131,27 @@ Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
   return result;
 }
 
+const Map<String, Function> _handlers = {
+  'meta.tool.find': _findTools,
+  'meta.artifact.peek': _peek,
+  'meta.history.search': _searchHistory,
+};
+
 /// Register the resident meta capabilities if absent.
 void ensureMetaTools(Registry registry) {
-  if (!registry.contains('meta.tool.find')) {
-    registry.register(findToolsDef, handler: _findTools, wantsCtx: true);
-  }
-  if (!registry.contains('meta.artifact.peek')) {
-    registry.register(peekDef, handler: _peek, wantsCtx: true);
-  }
-  if (!registry.contains('meta.history.search')) {
-    registry.register(searchHistoryDef, handler: _searchHistory, wantsCtx: true);
+  for (final definition in load('meta') as List) {
+    final map = (definition as Map).cast<String, Object?>();
+    final name = map['name'] as String;
+    if (!registry.contains(name)) {
+      registry.register(map, handler: _handlers[name], wantsCtx: true);
+    }
   }
 }
 
 /// Opt-in sub-agent capability for swarm-style setups.
 void installSpawn(Registry registry) {
   if (!registry.contains('meta.agent.spawn')) {
-    registry.register(spawnDef, handler: _spawn, wantsCtx: true);
+    registry.register((load('spawn') as Map).cast<String, Object?>(),
+        handler: _spawn, wantsCtx: true);
   }
 }
