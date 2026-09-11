@@ -16,6 +16,7 @@ import 'package:state_projection_loop/src/builtin/state.dart';
 import 'package:state_projection_loop/src/capability.dart';
 import 'package:state_projection_loop/src/registry.dart';
 import 'package:state_projection_loop/src/compression.dart';
+import 'package:state_projection_loop/src/json_schema.dart';
 import 'package:state_projection_loop/src/policy.dart';
 import 'package:state_projection_loop/src/serialization.dart';
 import 'package:state_projection_loop/src/tokens.dart';
@@ -115,5 +116,26 @@ void main() {
             reason: '${capability.name} would fail at call time with no_handler');
       }
     });
+  });
+  group('validation fixtures', () {
+    // Validation messages are a self-repair prompt sent to the model, so the
+    // wording is part of the contract, not an implementation detail.
+    for (final c in cases('validation', 'validate_args')) {
+      test('validateArgs ${jsonEncode(c['arguments'])}', () {
+        expect(
+          validateArgs((c['schema'] as Map).cast<String, Object?>(), c['arguments']),
+          equals(c['expected']),
+        );
+      });
+    }
+    for (final c in cases('validation', 'apply_defaults')) {
+      test('applyDefaults ${jsonEncode(c['arguments'])}', () {
+        expect(
+          jsonEncode(applyDefaults((c['schema'] as Map).cast<String, Object?>(),
+              (c['arguments'] as Map).cast<String, Object?>())),
+          equals(jsonEncode(c['expected'])),
+        );
+      });
+    }
   });
 }
