@@ -65,10 +65,14 @@ String? miniValidate(Map<String, Object?> schema, Object? value, [String path = 
     }
   }
   if (value is String) {
-    if (schema.containsKey('minLength') && value.length < (schema['minLength'] as num)) {
+    // Characters, not UTF-16 code units: the checklist store enforces its
+    // own limits in characters, and a schema that disagreed would reject
+    // text the store would have accepted.
+    final length = value.runes.length;
+    if (schema.containsKey('minLength') && length < (schema['minLength'] as num)) {
       return '$where: shorter than minLength ${schema['minLength']}';
     }
-    if (schema.containsKey('maxLength') && value.length > (schema['maxLength'] as num)) {
+    if (schema.containsKey('maxLength') && length > (schema['maxLength'] as num)) {
       return '$where: longer than maxLength ${schema['maxLength']}';
     }
   }

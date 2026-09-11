@@ -3,6 +3,7 @@ library;
 
 import 'dart:convert';
 import 'ids.dart';
+import 'serialization.dart';
 
 const checklistStatuses = [
   'pending',
@@ -302,9 +303,9 @@ class ChecklistStore {
         _lists.values.where((v) => v['include_in_context'] == true).toList();
     var used = 0;
     for (final value in visible) {
-      var line = jsonEncode(_view(value, value['context_mode'] as String));
+      var line = dumps(_view(value, value['context_mode'] as String));
       if (used + line.runes.length > maxChars - 100) {
-        line = jsonEncode(_view(value, 'summary'));
+        line = dumps(_view(value, 'summary'));
       }
       if (used + line.runes.length > maxChars - 100) break;
       lines.add(line);

@@ -576,4 +576,122 @@ void main() {
       expect(history.any((m) => m.role == 'assistant' && m.toolCalls.isNotEmpty), isTrue);
     });
   });
+  group('rewind', () {
+    test('cancels the old run and restores state', () async {
+      final session = Session(ScriptedLLM([
+        const TextStep('reply 0'),
+        const TextStep('reply 1'),
+        const TextStep('reply 2'),
+        const TextStep('after rewind'),
+      ]));
+      await session.send('msg 0');
+      await session.send('msg 1');
+      await session.send('msg 2');
+      expect(session.conversation.length, equals(6));
+      final oldRunId = session.run.id;
+
+      final irreversible = session.rewind(toTurn: 1);
+
+      expect(session.run.id, isNot(equals(oldRunId)));
+      expect(session.run.state, equals('RUNNING'));
+      expect(session.conversation.length, equals(2));
+      expect(session.conversation[0].content, equals('msg 0'));
+      expect(session.conversation[1].content, equals('reply 0'));
+      expect(irreversible, isEmpty);
+    });
+
+    test('reports external effects it cannot undo', () async {
+      final registry = Registry();
+      registry.register(
+        capabilityDict('mail.send', effects: [('external', 'smtp:*')]),
+        handler: (Map<String, Object?> args) => 'sent',
+      );
+      final session = Session(
+        ScriptedLLM([
+          DecisionStep(ScriptedLLM.call('mail.send')),
+          const TextStep('sent the email'),
+          const TextStep('reply 1'),
+        ]),
+        registry: registry,
+        policy: allowAllPolicy(),
+      );
+      await session.send('send the email');
+      await session.send('do something else');
+
+      final irreversible = session.rewind(toTurn: 1);
+      expect(irreversible.any((n) => n.contains('mail.send')), isTrue);
+    });
+
+    test('restores the working state', () async {
+      final registry = Registry();
+      installState(registry);
+      final session = Session(
+        ScriptedLLM([
+          DecisionStep(ScriptedLLM.call('state.goal.set', arguments: {'text': 'find the key'})),
+          const TextStep('goal set'),
+          DecisionStep(ScriptedLLM.call('state.goal.set', arguments: {'text': 'escape the room'})),
+          const TextStep('goal changed'),
+          const TextStep('after rewind'),
+        ]),
+        registry: registry,
+        policy: allowAllPolicy(),
+      );
+      await session.send('set goal');
+      await session.send('change goal');
+      expect(session.workingState.goal, equals('escape the room'));
+
+      session.rewind(toTurn: 1);
+      expect(session.workingState.goal, equals('find the key'));
+    });
+
+    test('the conversation continues normally afterwards', () async {
+      final session = Session(ScriptedLLM([
+        const TextStep('reply 0'),
+        const TextStep('reply 1'),
+        const TextStep('new reply after rewind'),
+      ]));
+      await session.send('msg 0');
+      await session.send('msg 1');
+      session.rewind(toTurn: 1);
+      final reply = await session.send('msg after rewind');
+      expect(reply, equals('new reply after rewind'));
+    });
+
+    test('clears the validation-failure counters', () async {
+      // The failures being counted are in the discarded history; a
+      // capability must not start the new timeline one strike from being
+      // given up on.
+      final registry = Registry();
+      registry.register(
+        capabilityDict('demo.strict',
+            properties: {
+              'n': {'type': 'integer'},
+            },
+            required: ['n']),
+        handler: (Map<String, Object?> args) => 'ok',
+      );
+      final session = Session(
+        ScriptedLLM([
+          DecisionStep(ScriptedLLM.call('demo.strict', arguments: {'n': 'not an integer'})),
+          const TextStep('oops'),
+          DecisionStep(ScriptedLLM.call('demo.strict', arguments: {'n': 'still wrong'})),
+          const TextStep('oops again'),
+          DecisionStep(ScriptedLLM.call('demo.strict', arguments: {'n': 'wrong once more'})),
+          const TextStep('done'),
+        ]),
+        registry: registry,
+        policy: allowAllPolicy(),
+      );
+      await session.send('call it');
+      await session.send('call it again');
+      session.rewind(toTurn: 1);
+      await session.send('call it once more');
+      final observations = [
+        for (final e in session.ledger.iterRun(session.run.id))
+          if (e.type == 'observation') e.data['text'].toString(),
+      ];
+      expect(observations.any((o) => o.contains('giving up')), isFalse,
+          reason: 'the counter should have been reset by the rewind');
+    });
+  });
 }

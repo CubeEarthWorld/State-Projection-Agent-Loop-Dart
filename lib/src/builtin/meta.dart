@@ -15,6 +15,7 @@ import '../config.dart';
 import '../discovery.dart' show ToolSearch;
 import '../events.dart' show EventLedger;
 import '../registry.dart';
+import '../serialization.dart';
 import '../run.dart' show Run;
 import '../session.dart';
 
@@ -245,7 +246,7 @@ Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
     }
   }
 
-  final childConfig = Config.fromMap(parent.config.toMap());
+  final childConfig = Config.fromMap(deepCopy(parent.config.toMap()));
   childConfig.mode = 'job';
   childConfig.budget.maxSteps = maxSteps;
   childConfig.persistence.ledgerDirectory = null; // child ledger is not persisted independently

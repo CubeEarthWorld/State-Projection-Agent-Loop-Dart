@@ -9,9 +9,9 @@
 /// close for Japanese, which keeps budget enforcement on the safe side.
 library;
 
-import 'dart:convert';
 
 import 'messages.dart';
+import 'serialization.dart';
 
 const List<List<int>> _cjkRanges = [
   [0x1100, 0x11FF], // Hangul Jamo
@@ -52,21 +52,6 @@ void setEstimator(TokenEstimator fn) {
   _estimator = fn;
 }
 
-const JsonEncoder _jsonEncoder = JsonEncoder();
-
-String _jsonEncode(Object? obj) => _jsonEncoder.convert(_jsonSafe(obj));
-
-Object? _jsonSafe(Object? obj) {
-  if (obj == null || obj is num || obj is bool || obj is String) return obj;
-  if (obj is Map) {
-    return obj.map((k, v) => MapEntry(k.toString(), _jsonSafe(v)));
-  }
-  if (obj is Iterable) {
-    return obj.map(_jsonSafe).toList();
-  }
-  return obj.toString();
-}
-
 
 /// Estimate tokens for text, message-like objects, lists, or maps.
 int estimateTokens(Object? obj) {
@@ -78,12 +63,12 @@ int estimateTokens(Object? obj) {
   if (obj is Message) {
     var total = 4 + estimateTokens(obj.content);
     for (final tc in obj.toolCalls) {
-      total += 6 + _estimator(tc.name) + _estimator(_jsonEncode(tc.arguments));
+      total += 6 + _estimator(tc.name) + _estimator(dumps(tc.arguments));
     }
     return total;
   }
   if (obj is Map) {
-    return _estimator(_jsonEncode(obj));
+    return _estimator(dumps(obj));
   }
   return _estimator(obj.toString());
 }

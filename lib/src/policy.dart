@@ -53,6 +53,11 @@ const List<String> presets = [
 
 /// Translate a Python-`fnmatch`-style glob pattern (`*`, `?`, `[seq]`,
 /// `[!seq]`) into an anchored [RegExp].
+///
+/// Deliberately `fnmatch`-compatible, not regex-compatible: `!` is the only
+/// negation character, `^` inside a class is a literal, and `*`/`?` match
+/// newlines. A policy pattern that means one thing here and another in the
+/// Python package would flip a `deny` into an `allow`.
 RegExp globToRegExp(String pattern) {
   final buf = StringBuffer('^');
   var i = 0;
@@ -65,8 +70,15 @@ RegExp globToRegExp(String pattern) {
     } else if (c == '[') {
       var j = i + 1;
       var negate = false;
-      if (j < pattern.length && (pattern[j] == '!' || pattern[j] == '^')) {
+      if (j < pattern.length && pattern[j] == '!') {
         negate = true;
+        j++;
+      }
+      // fnmatch: a ']' immediately after the (optional) '!' is a literal
+      // member of the class, not the closing bracket.
+      var leadingBracket = '';
+      if (j < pattern.length && pattern[j] == ']') {
+        leadingBracket = ']';
         j++;
       }
       final start = j;
@@ -76,7 +88,13 @@ RegExp globToRegExp(String pattern) {
       if (j >= pattern.length) {
         buf.write(RegExp.escape(c));
       } else {
-        final body = pattern.substring(start, j);
+        // Escape the characters that mean something to a regex class but
+        // nothing to fnmatch. A leading '^' is one of them.
+        final body = (leadingBracket + pattern.substring(start, j))
+            .replaceAll(r'\', r'\\')
+            .replaceAll('^', r'\^')
+            .replaceAll('[', r'\[')
+            .replaceAll(']', r'\]');
         buf.write('[${negate ? '^' : ''}$body]');
         i = j;
       }
@@ -86,7 +104,7 @@ RegExp globToRegExp(String pattern) {
     i++;
   }
   buf.write(r'$');
-  return RegExp(buf.toString());
+  return RegExp(buf.toString(), dotAll: true);
 }
 
 bool globMatch(String value, String pattern) => globToRegExp(pattern).hasMatch(value);

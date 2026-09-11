@@ -392,4 +392,47 @@ void main() {
       expect(msgs.any((m) => m.role == 'tool'), isFalse);
     });
   });
+  group('fidelity by age', () {
+    // Older events are rendered at reduced fidelity. Only the most recent
+    // window is verbatim; this is where compressText and summarizeText enter
+    // the projection, and it was untested in this port.
+    test('compressed for older', () {
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      for (var i = 0; i < 30; i++) {
+        ledger.append(runId, 'user_input', {'text': 'msg $i ${'pad ' * 50}'});
+        ledger.append(runId, 'model_response', {'text': 'reply $i ${'pad ' * 50}'});
+      }
+      final msgs = HistorySection().render(makeTurn(ledger: ledger, runId: runId));
+      final first = msgs.first.content.toString();
+      expect(first.contains('omitted') || first.length < 500, isTrue);
+    });
+
+    test('summary for old', () {
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      for (var i = 0; i < 70; i++) {
+        ledger.append(runId, 'user_input',
+            {'text': 'message number $i with some content ${'pad ' * 30}'});
+        ledger.append(runId, 'model_response', {'text': 'reply $i ${'pad ' * 30}'});
+      }
+      final msgs = HistorySection().render(makeTurn(ledger: ledger, runId: runId));
+      expect(msgs.first.content.toString(), contains('chars]'));
+    });
+
+    test('a part list passes through instead of being stringified', () {
+      // Multimodal content is a list of parts; stringifying it would destroy
+      // the message. Only a plain string can be compressed.
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      final parts = [
+        {'type': 'text', 'text': 'look at this'},
+        {'type': 'image_url', 'image_url': 'https://example.invalid/a.png'},
+      ];
+      ledger.append(runId, 'user_input', {'text': parts});
+      final msgs = HistorySection().render(makeTurn(ledger: ledger, runId: runId));
+      expect(msgs.single.content, isA<List<Object?>>());
+      expect((msgs.single.content as List).length, equals(2));
+    });
+  });
 }

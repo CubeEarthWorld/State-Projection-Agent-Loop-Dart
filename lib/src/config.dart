@@ -97,7 +97,7 @@ class BudgetConfig {
     this.costPer1kOutput = 0.0,
   });
 
-  int maxSteps;
+  int? maxSteps; // null means no step limit, as for the other budget caps
   int? maxTokens;
   double? maxCost;
   double? maxSeconds;
@@ -248,7 +248,7 @@ class Config {
           });
         case 'budget':
           _applySub(cfg.budget, value, key, {
-            'max_steps': (v) => cfg.budget.maxSteps = (v as num).toInt(),
+            'max_steps': (v) => cfg.budget.maxSteps = (v as num?)?.toInt(),
             'max_tokens': (v) => cfg.budget.maxTokens = (v as num?)?.toInt(),
             'max_cost': (v) => cfg.budget.maxCost = (v as num?)?.toDouble(),
             'max_seconds': (v) => cfg.budget.maxSeconds = (v as num?)?.toDouble(),

@@ -18,6 +18,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'ids.dart';
+import 'serialization.dart';
 
 const List<String> eventTypes = [
   'user_input',
@@ -62,7 +63,7 @@ class Event {
   final double ts;
   final Map<String, Object?> data;
 
-  String toLine() => jsonEncode({
+  String toLine() => dumps({
         'id': id,
         'run_id': runId,
         'sequence': sequence,
@@ -238,7 +239,7 @@ class JsonlLedger implements EventLedger {
     };
     final target = _snapshotPath(snapshot.runId);
     final tmp = File('${target.path}.tmp');
-    tmp.writeAsStringSync(jsonEncode(payload), encoding: utf8);
+    tmp.writeAsStringSync(dumps(payload), encoding: utf8);
     tmp.renameSync(target.path);
   }
 

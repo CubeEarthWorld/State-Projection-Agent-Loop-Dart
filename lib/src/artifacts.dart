@@ -22,6 +22,7 @@ import 'dart:io';
 
 import 'ids.dart';
 import 'tokens.dart';
+import 'serialization.dart';
 
 const String refKey = r'$artifact';
 
@@ -150,7 +151,7 @@ class ArtifactStore {
       'text': record.text,
     };
     File('${runDir.path}/${record.id}.json')
-        .writeAsStringSync(jsonEncode(payload), encoding: utf8);
+        .writeAsStringSync(dumps(payload), encoding: utf8);
   }
 
   /// Recover a persisted record written by an earlier process.
@@ -271,7 +272,13 @@ class ArtifactStore {
           final idx = int.parse(part.substring(1, part.length - 1));
           value = (value as List)[idx];
         } else {
-          value = (value as Map)[part];
+          final map = value as Map;
+          // A missing key is an error, not the value null: returning "null"
+          // would hand the model a fact it never asked about.
+          if (!map.containsKey(part)) {
+            throw ArgumentError('no key "$part"');
+          }
+          value = map[part];
         }
       }
       return serializeValue(value);

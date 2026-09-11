@@ -27,6 +27,7 @@ import 'policy.dart';
 import 'projection.dart';
 import 'registry.dart';
 import 'run.dart';
+import 'serialization.dart';
 import 'runtime.dart';
 import 'tokens.dart';
 import 'working_state.dart';
@@ -242,13 +243,13 @@ class Session {
     final newSession = Session(
       llm,
       kernel: _kernelText,
-      config: Config.fromMap(config.toMap()),
+      config: Config.fromMap(deepCopy(config.toMap())),
       registry: registry,
       embedder: search.embedder,
       spawnLlmFactory: spawnLlmFactory,
       policy: policy,
     );
-    newSession.workingState = WorkingState.fromDict(workingState.toDict());
+    newSession.workingState = WorkingState.fromDict(deepCopy(workingState.toDict()));
     final renderable = ledger
         .iterRun(run.id)
         .where((e) => renderableTypes.contains(e.type))
@@ -552,8 +553,10 @@ class Session {
     for (final event in events.reversed) {
       final msgDict = eventToMessage(event);
       if (msgDict != null && msgDict['role'] == role) {
-        final content = (msgDict['content'] ?? '').toString();
-        if (content.isNotEmpty) return content;
+        // A part list is not a search query; keep looking further back
+        // rather than stringifying it.
+        final content = msgDict['content'];
+        if (content is String && content.isNotEmpty) return content;
       }
     }
     return '';

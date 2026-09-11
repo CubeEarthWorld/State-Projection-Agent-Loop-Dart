@@ -16,10 +16,10 @@
 /// out of the live projection.
 library;
 
-import 'dart:convert';
 
 import 'tokens.dart';
 import 'checklists.dart';
+import 'serialization.dart';
 
 class RecordedDecision {
   RecordedDecision({required this.text, this.reason = ''});
@@ -137,7 +137,7 @@ class WorkingState {
       parts.add('artifact_refs: ${artifactRefs.join(', ')}');
     }
     if (extra.isNotEmpty) {
-      parts.add('extra: ${jsonEncode(extra)}');
+      parts.add('extra: ${dumps(extra)}');
     }
     var body = parts.join('\n');
     if (estimateTokens(body) > maxTokens) {

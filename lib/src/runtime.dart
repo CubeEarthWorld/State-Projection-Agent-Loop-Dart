@@ -115,7 +115,7 @@ class BudgetState {
 
   String? exceeded(Config cfg) {
     final b = cfg.budget;
-    if (steps >= b.maxSteps) {
+    if (b.maxSteps != null && steps >= b.maxSteps!) {
       return 'max_steps (${b.maxSteps}) reached';
     }
     final total = promptTokens + completionTokens;

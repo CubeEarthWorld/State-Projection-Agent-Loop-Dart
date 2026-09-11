@@ -8,11 +8,11 @@
 /// identical either way.
 library;
 
-import 'dart:convert';
 
 import '../capability.dart';
 import '../registry.dart';
 import '../working_state.dart';
+import '../serialization.dart';
 
 (Map<String, Object?>, String) _walkExtra(Map<String, Object?> extra, String path,
     {bool create = false}) {
@@ -84,7 +84,7 @@ String _extraSet(ToolContext ctx, Map<String, Object?> args) {
   final value = args['value'];
   final (node, leaf) = _walkExtra(_ws(ctx).extra, path, create: true);
   node[leaf] = value;
-  return 'extra.$path = ${jsonEncode(value)}';
+  return 'extra.$path = ${dumps(value)}';
 }
 
 Object? _extraGet(ToolContext ctx, Map<String, Object?> args) {

@@ -198,7 +198,9 @@ class ToolSearch {
       if (layer == 2 && t.discovery.noEmbed) continue;
       if (category != null) {
         final cat = t.category.isEmpty ? 'misc' : t.category;
-        final norm = category.replaceAll(RegExp(r'/\*$'), '').replaceAll(RegExp(r'/$'), '');
+        // Strip any trailing '/' and '*' — "file*", "file/", "a/**" and
+        // "a/*" all name the same category, as Python's rstrip("/*") does.
+        final norm = category.replaceAll(RegExp(r'[/*]+$'), '');
         if (!(cat == norm || cat.startsWith('$norm/'))) continue;
       }
       tools.add(t);
@@ -242,7 +244,15 @@ class ToolSearch {
         results.add(ScoredTool(tool: t, score: score, components: components));
       }
     }
-    results.sort((a, b) => b.score.compareTo(a.score));
+    // List.sort is not stable in Dart, and these candidates are projected
+    // every turn: without a tie-break, two tools with the same score could
+    // swap places between turns and change the prompt for no reason. The
+    // registry's own order breaks the tie, matching Python's stable sort.
+    final order = {for (var i = 0; i < results.length; i++) results[i].tool.name: i};
+    results.sort((a, b) {
+      final byScore = b.score.compareTo(a.score);
+      return byScore != 0 ? byScore : order[a.tool.name]!.compareTo(order[b.tool.name]!);
+    });
     return results.take(k).toList();
   }
 }

@@ -21,7 +21,7 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
+import 'serialization.dart';
 
 const List<String> effectKinds = ['none', 'read', 'write', 'external'];
 const List<String> retrySafetyKinds = [
@@ -177,6 +177,14 @@ class CapabilityExecution {
   /// the owning [Capability]. Replaces Python's `handler_ref` + `importlib`
   /// dynamic-import path, which has no Dart equivalent.
   final Function? handler;
+  /// Wall-clock budget for one attempt.
+  ///
+  /// Only enforceable against a handler that actually yields: Dart cannot
+  /// interrupt a synchronous function, so a handler that blocks the isolate
+  /// runs to completion however long it takes, and the timer only fires
+  /// afterwards. Give any handler that can be slow an async body. (The
+  /// Python package hands synchronous handlers to a worker thread, so this
+  /// limitation is Dart's alone.)
   final double timeoutS;
   final int retries;
   final String retrySafety;
@@ -184,32 +192,23 @@ class CapabilityExecution {
   final OutputPolicy outputPolicy;
 }
 
-const Map<String, String> _jsonToDartType = {
-  'string': 'String',
-  'integer': 'int',
-  'number': 'double',
-  'boolean': 'bool',
-  'array': 'List',
-  'object': 'Map',
-  'null': 'null',
-};
-
+/// Render a parameter's type for the signature line.
+///
+/// Deliberately the JSON Schema vocabulary, not a language's: the model sees
+/// the same type names here and in the full spec below, and the Dart and
+/// Python ports render one identical string instead of two dialects.
 String _typeStr(Map<String, Object?> schema) {
   final t = schema['type'];
-  if (t is List) {
-    return t.map((x) => _jsonToDartType[x] ?? x.toString()).join(' | ');
-  }
-  if (t is String) {
-    return _jsonToDartType[t] ?? t;
-  }
+  if (t is List) return t.map((x) => x.toString()).join(' | ');
+  if (t is String) return t;
   if (schema.containsKey('enum')) {
-    final values = (schema['enum'] as List).map((v) => jsonEncode(v)).join(', ');
+    final values = (schema['enum'] as List).map((v) => dumps(v)).join(', ');
     return 'Literal[$values]';
   }
-  return 'Object?';
+  return 'any';
 }
 
-/// Build a python-ish signature string from a JSON Schema.
+/// Build a signature string from a JSON Schema.
 String synthesizeSignature(
   String name,
   Map<String, Object?> parameters, [
@@ -226,15 +225,11 @@ String synthesizeSignature(
         : <String, Object?>{};
     var piece = '${entry.key}: ${_typeStr(sch)}';
     if (!required.contains(entry.key)) {
-      if (sch.containsKey('default')) {
-        piece += ' = ${jsonEncode(sch['default'])}';
-      } else {
-        piece += ' = None';
-      }
+      piece += sch.containsKey('default') ? ' = ${dumps(sch['default'])}' : ' = null';
     }
     parts.add(piece);
   }
-  final ret = returns != null ? _typeStr(returns) : 'Object?';
+  final ret = returns != null ? _typeStr(returns) : 'any';
   return '$name(${parts.join(', ')}) -> $ret';
 }
 
@@ -415,9 +410,9 @@ class Capability {
   String specText() {
     final lines = <String>['### $qualifiedName', card.signature];
     if (spec.description.isNotEmpty) lines.add(spec.description);
-    lines.add('Parameters (JSON Schema): ${jsonEncode(spec.parameters)}');
+    lines.add('Parameters (JSON Schema): ${dumps(spec.parameters)}');
     if (spec.returns != null) {
-      lines.add('Returns: ${jsonEncode(spec.returns)}');
+      lines.add('Returns: ${dumps(spec.returns)}');
     }
     if (effects.isNotEmpty) {
       lines.add('Effects: ${effects.map((e) => '${e.kind}:${e.resource}').join(', ')}');
@@ -426,7 +421,7 @@ class Capability {
       lines.add('Usage notes: ${spec.usageNotes}');
     }
     for (final ex in spec.examples) {
-      final call = jsonEncode(ex['call'] ?? {});
+      final call = dumps(ex['call'] ?? {});
       final note = (ex['note'] as String?) ?? '';
       lines.add('Example: $name($call)${note.isNotEmpty ? ' — $note' : ''}');
     }

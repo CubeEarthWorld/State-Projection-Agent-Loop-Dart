@@ -13,7 +13,6 @@
 /// native tool schemas and a reserved output allowance.
 library;
 
-import 'dart:convert';
 
 import 'compression.dart';
 import 'config.dart';
@@ -23,6 +22,7 @@ import 'messages.dart';
 import 'registry.dart';
 import 'tokens.dart';
 import 'working_state.dart';
+import 'serialization.dart';
 
 /// Everything a section may draw on when rendering one turn.
 class TurnContext {
@@ -242,8 +242,11 @@ class HistorySection implements Section {
       final age = n - 1 - i;
       final msgDict = eventToMessage(event);
       if (msgDict == null) continue;
-      var content = (msgDict['content'] ?? '').toString();
-      if (content.isNotEmpty) {
+      // Content may be a list of parts (text + images). Only a plain string
+      // can be compressed; stringifying a part list would destroy it, so it
+      // passes through untouched.
+      Object? content = msgDict['content'] ?? '';
+      if (content is String && content.isNotEmpty) {
         if (age < cfg.fullWindow) {
           // verbatim
         } else if (age < cfg.compressedWindow) {
@@ -356,7 +359,7 @@ class Projection {
 
   int schemaTokens(List<Map<String, Object?>> apiTools) {
     if (apiTools.isEmpty) return 0;
-    return estimateTokens(jsonEncode(apiTools));
+    return estimateTokens(dumps(apiTools));
   }
 
   List<Message> render(
