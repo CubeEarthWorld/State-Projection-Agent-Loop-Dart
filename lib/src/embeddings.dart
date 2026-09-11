@@ -55,19 +55,22 @@ class HashingEmbedding implements EmbeddingBackend {
 
   Vector _embed(String text) {
     final vec = List<double>.filled(dim, 0.0);
-    final lower = (text).toLowerCase();
+    // Characters, not UTF-16 code units: slicing by code unit would split a
+    // surrogate pair and hash a different byte sequence than the Python
+    // backend does for the same text.
+    final runes = text.toLowerCase().runes.toList();
     for (final n in [2, 3]) {
-      for (var i = 0; i <= lower.length - n; i++) {
-        if (i < 0) continue;
-        final gram = lower.substring(i, i + n);
+      for (var i = 0; i + n <= runes.length; i++) {
+        final gram = String.fromCharCodes(runes.getRange(i, i + n));
         final digest = md5.convert(utf8.encode(gram)).bytes;
-        // little-endian uint32 from first 4 bytes
+        // little-endian uint32 from the first 4 bytes, full 32 bits: masking
+        // off the sign bit would change the bucket for any non-power-of-two
+        // dim.
         final h = digest[0] |
             (digest[1] << 8) |
             (digest[2] << 16) |
             (digest[3] << 24);
-        final idx = (h & 0x7FFFFFFF) % dim;
-        vec[idx] += 1.0;
+        vec[h % dim] += 1.0;
       }
     }
     var norm = 0.0;

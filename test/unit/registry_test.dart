@@ -162,6 +162,71 @@ void main() {
       expect(reg.subset([]).length, equals(0));
     });
   });
+  group('disabling', () {
+    Registry buildDisableRegistry() {
+      final reg = Registry();
+      reg.register(capabilityDict('web.search.query', category: 'web/search'));
+      reg.register(capabilityDict('web.fetch.url', category: 'web/fetch'));
+      reg.register(capabilityDict('file.read', category: 'file', pinned: true));
+      return reg;
+    }
+
+    test('disabled by name is unreachable', () {
+      final reg = buildDisableRegistry();
+      reg.disable(['file.read']);
+      expect(reg.get('file.read'), isNull);
+      expect(reg.contains('file.read'), isFalse);
+      expect(reg.pinned(), isEmpty);
+      expect(reg.tocText().contains('file'), isFalse);
+      expect(reg.length, equals(2));
+    });
+
+    test('disabled by category prefix', () {
+      final reg = buildDisableRegistry();
+      reg.disable(['web/*']);
+      expect(reg.all().map((c) => c.name).toList(), equals(['file.read']));
+    });
+
+    test('disable bumps the epoch so caches rebuild', () {
+      final reg = buildDisableRegistry();
+      final before = reg.epoch;
+      reg.disable(['file.read']);
+      expect(reg.epoch, greaterThan(before));
+      final mid = reg.epoch;
+      reg.disable(['file.read']);
+      expect(reg.epoch, equals(mid));
+    });
+
+    test('enable restores', () {
+      final reg = buildDisableRegistry();
+      reg.disable(['file.read']);
+      reg.enable(['file.read']);
+      expect(reg.get('file.read'), isNotNull);
+      expect(reg.pinned().map((c) => c.name).toList(), equals(['file.read']));
+    });
+
+    test('disable survives later registration', () {
+      final reg = Registry(disabled: ['late.tool.run']);
+      reg.register(capabilityDict('late.tool.run'));
+      expect(reg.get('late.tool.run'), isNull);
+      expect(reg.all(), isEmpty);
+    });
+
+    test('api name of a disabled capability does not resolve', () {
+      final reg = buildDisableRegistry();
+      reg.disable(['file.read']);
+      expect(reg.resolveApiName('file__read'), equals('file__read'));
+    });
+
+    test('subset carries the deny list', () {
+      final reg = buildDisableRegistry();
+      reg.disable(['web/*']);
+      final sub = reg.subset(['web/*', 'file.read']);
+      expect(sub.all().map((c) => c.name).toList(), equals(['file.read']));
+      sub.register(capabilityDict('web.search.query', category: 'web/search'), replace: true);
+      expect(sub.get('web.search.query'), isNull);
+    });
+  });
 }
 
 class _ListProvider implements ToolProvider {

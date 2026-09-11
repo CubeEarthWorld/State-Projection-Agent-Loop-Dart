@@ -23,10 +23,36 @@ abstract interface class ToolProvider {
   Iterable<Object> provide(); // Capability | Map
 }
 
+/// One scope entry against one capability.
+///
+/// An entry matches a capability name exactly, a category exactly, or a
+/// category prefix written as `"cat/*"`. Shared by [Registry.subset] (an
+/// allow-list for sub-agents) and [Registry.disable] (a deny-list).
+bool scopeMatches(String entry, String name, String category) {
+  if (entry == name || entry == category) return true;
+  return entry.endsWith('/*') &&
+      category.startsWith(entry.substring(0, entry.length - 1));
+}
+
+/// Every capability in the system, and the single gate the model sees it
+/// through.
+///
+/// Both [all_] and [get] skip disabled capabilities, and every other surface
+/// — the TOC, pinned specs, native tool schemas, layer-2 candidates,
+/// `meta.tool.find`, and execution — derives from those two. Disabling
+/// therefore removes a capability from all of them at once.
 class Registry {
+  Registry({Iterable<String> disabled = const []})
+      : _disabled = disabled.toSet();
+
   final Map<String, Capability> _capabilities = {}; // keyed by qualifiedName
   final Map<String, String> _latest = {}; // name -> qualifiedName of highest version
   int _epoch = 0;
+  // A deny-list of names/categories, not of registered objects: a disabled
+  // name stays disabled however it is registered afterwards, so bundled
+  // tools that self-install (ensureMetaTools) cannot sneak back in.
+  final Set<String> _disabled;
+  (int, List<Capability>) _pinnedCache = (-1, const []);
   final List<ToolProvider> _providers = [];
   final Map<int, Set<String>> _providerTools = {};
 
@@ -88,6 +114,11 @@ class Registry {
   static Capability _coerce(Object capability,
       {Function? handler, bool wantsCtx = false}) {
     if (capability is Capability) {
+      if (handler != null) {
+        throw ArgumentError(
+            'Capability "${capability.name}" already carries its own handler; '
+            'pass a handler only when registering a definition map');
+      }
       return capability;
     }
     if (capability is Map) {
@@ -134,15 +165,54 @@ class Registry {
     }
   }
 
+  // -- disabling ------------------------------------------------------------
+
+  Set<String> get disabled => Set.unmodifiable(_disabled);
+
+  /// Hide capabilities from the model entirely.
+  ///
+  /// Entries follow [scopeMatches]. A disabled capability is gone from the
+  /// tool index, pinned specs, native schemas, search and execution alike —
+  /// the model can neither see it nor call it.
+  void disable(Iterable<String> names) {
+    final added = names.toSet().difference(_disabled);
+    if (added.isNotEmpty) {
+      _disabled.addAll(added);
+      _epoch += 1;
+    }
+  }
+
+  /// Undo [disable] for the given entries.
+  void enable(Iterable<String> names) {
+    final removed = _disabled.intersection(names.toSet());
+    if (removed.isNotEmpty) {
+      _disabled.removeAll(removed);
+      _epoch += 1;
+    }
+  }
+
+  bool _isDisabled(Capability capability) {
+    if (_disabled.isEmpty) return false;
+    final category = capability.category.isEmpty ? 'misc' : capability.category;
+    return _disabled.any((e) => scopeMatches(e, capability.name, category));
+  }
+
   // -- lookup ---------------------------------------------------------------
 
   int get epoch => _epoch;
 
   /// Resolve by `name@version` (exact) or bare `name` (latest).
+  ///
+  /// Disabled capabilities resolve to null, exactly like unregistered ones —
+  /// that is what makes them unreachable from the runtime.
   Capability? get(String name) {
-    if (_capabilities.containsKey(name)) return _capabilities[name];
-    final qname = _latest[name];
-    return qname != null ? _capabilities[qname] : null;
+    var capability = _capabilities[name];
+    if (capability == null) {
+      final qname = _latest[name];
+      capability = qname != null ? _capabilities[qname] : null;
+    }
+    if (capability == null || _isDisabled(capability)) return null;
+    return capability;
   }
 
   /// Translate a provider-safe `apiName` (see [Capability.apiName]) back to
@@ -153,26 +223,29 @@ class Registry {
   /// is also returned unchanged, so the normal "unknown capability" error
   /// path still reports the name the model actually sent.
   String resolveApiName(String name) {
-    if (_capabilities.containsKey(name) || _latest.containsKey(name)) {
-      return name;
-    }
+    if (get(name) != null) return name;
     final dotted = fromApiName(name);
-    if (_capabilities.containsKey(dotted) || _latest.containsKey(dotted)) {
-      return dotted;
-    }
+    if (get(dotted) != null) return dotted;
     return name;
   }
 
   bool contains(String name) => get(name) != null;
 
-  int get length => _latest.length;
+  int get length => all_.length;
 
-  Iterable<Capability> get all_ => _latest.values.map((q) => _capabilities[q]!);
+  Iterable<Capability> get all_ =>
+      _latest.values.map((q) => _capabilities[q]!).where((c) => !_isDisabled(c));
 
   List<Capability> all() => all_.toList();
 
-  List<Capability> pinned() =>
-      all_.where((c) => c.discovery.pinned).toList();
+  /// Cached by epoch: this is read several times per turn (native schemas,
+  /// the kernel section, the layer-2 exclusion set).
+  List<Capability> pinned() {
+    if (_pinnedCache.$1 != _epoch) {
+      _pinnedCache = (_epoch, all_.where((c) => c.discovery.pinned).toList());
+    }
+    return _pinnedCache.$2;
+  }
 
   Map<String, int> categories() {
     final counts = <String, int>{};
@@ -199,14 +272,6 @@ class Registry {
       for (final cat in sortedKeys) cat: (totals[cat]!, pinnedCounts[cat] ?? 0),
     };
   }
-
-  List<Capability> inCategory(String category) => all_
-      .where((c) {
-        final cat = c.category.isEmpty ? 'misc' : c.category;
-        final trimmed = category.replaceAll(RegExp(r'/$'), '');
-        return cat == category || cat.startsWith('$trimmed/');
-      })
-      .toList();
 
   // -- layer 1: table of contents -------------------------------------------
 
@@ -251,27 +316,17 @@ class Registry {
 
   /// New registry containing only the named capabilities/categories.
   ///
-  /// Scope entries match a capability name exactly, a category exactly, or
-  /// a category prefix written as `"cat/*"`.
+  /// Scope entries follow [scopeMatches]. Capabilities disabled here are
+  /// already invisible to the iteration, and the deny-list carries over so
+  /// they stay disabled in the child.
   Registry subset(Iterable<String> scope) {
     final scopeList = scope.toList();
-    final sub = Registry();
+    final sub = Registry(disabled: _disabled);
     for (final c in all_) {
       final cat = c.category.isEmpty ? 'misc' : c.category;
-      var matched = false;
-      for (final entry in scopeList) {
-        if (entry == c.name || entry == cat) {
-          matched = true;
-          break;
-        }
-        if (entry.endsWith('/*') &&
-            cat.startsWith(entry.substring(0, entry.length - 1))) {
-          matched = true;
-          break;
-        }
+      if (scopeList.any((entry) => scopeMatches(entry, c.name, cat))) {
+        sub._capabilities[c.qualifiedName] = c;
       }
-      if (!matched) continue;
-      sub._capabilities[c.qualifiedName] = c;
     }
     sub._recomputeLatest();
     sub._epoch = 1;

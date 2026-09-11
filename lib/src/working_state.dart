@@ -16,11 +16,10 @@
 /// out of the live projection.
 library;
 
-import 'dart:convert';
 
-import 'messages.dart';
 import 'tokens.dart';
 import 'checklists.dart';
+import 'serialization.dart';
 
 class RecordedDecision {
   RecordedDecision({required this.text, this.reason = ''});
@@ -138,7 +137,7 @@ class WorkingState {
       parts.add('artifact_refs: ${artifactRefs.join(', ')}');
     }
     if (extra.isNotEmpty) {
-      parts.add('extra: ${jsonEncode(extra)}');
+      parts.add('extra: ${dumps(extra)}');
     }
     var body = parts.join('\n');
     if (estimateTokens(body) > maxTokens) {
@@ -152,24 +151,17 @@ class WorkingState {
   }
 }
 
-/// Projects the working state each turn (volatile — always near the tail).
-class WorkingStateSection {
-  WorkingStateSection({this.maxTokens = 800});
-
-  final String name = 'working_state';
-  final String cacheClass = 'volatile';
-  final int maxTokens;
-
-  List<Message> render(Object? turn) {
-    final ws = (turn as dynamic).workingState as WorkingState?;
-    if (ws == null || ws.isEmpty()) return const [];
-    final body = ws.render(maxTokens: maxTokens);
-    if (body.isEmpty) return const [];
-    return [
-      Message(
-        role: kSystem,
-        content: '[Working state]\n$body',
-      ),
-    ];
-  }
-}
+/// The typed fields of [WorkingState], i.e. the keys `fromDict` understands.
+/// Anything else a caller seeds is app-specific state and belongs in `extra`.
+const Set<String> workingStateFields = {
+  'goal',
+  'acceptance_criteria',
+  'constraints',
+  'confirmed_facts',
+  'decisions',
+  'open_questions',
+  'next_actions',
+  'artifact_refs',
+  'extra',
+  'checklists',
+};

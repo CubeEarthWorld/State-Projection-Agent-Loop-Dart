@@ -19,7 +19,7 @@ import 'package:state_projection_loop/src/json_schema.dart' show miniValidate;
 }) {
   final cfg = config ?? Config();
   final store = ArtifactStore('run_test');
-  final runtime = Runtime(registry, store, cfg);
+  final runtime = Runtime(registry, cfg);
   final ledger = InMemoryLedger();
   final run = Run('run_test', 'ses_test', ledger);
   final policy = PolicyEngine(defaultDecision: allowAll ? 'allow' : 'require_approval');
@@ -30,7 +30,7 @@ import 'package:state_projection_loop/src/json_schema.dart' show miniValidate;
 
 Future<ExecuteBatchResult> runBatch(Runtime runtime, List<ToolCall> calls, TurnContext turn,
         ToolContext ctx, Run run, PolicyEngine policy) =>
-    runtime.execute(calls, turn, ctx, run, policy);
+    runtime.execute(calls, ctx, run, policy);
 
 Registry echoRegistry() {
   final reg = Registry();
@@ -85,12 +85,22 @@ void main() {
       expect(batch.results[0].observation, contains('not valid JSON'));
     });
 
-    test('unknown capability mentions find_tools', () async {
+    test('unknown capability mentions the search tool when present', () async {
+      final registry = echoRegistry();
+      ensureMetaTools(registry);
+      final (runtime, turn, ctx, run, policy) = makeRuntime(registry);
+      final batch =
+          await runBatch(runtime, [ToolCall(name: 'nope.nope', arguments: {})], turn, ctx, run, policy);
+      expect(batch.results[0].ok, isFalse);
+      expect(batch.results[0].observation, contains('meta.tool.find'));
+    });
+
+    test('unknown capability never advertises an absent search tool', () async {
       final (runtime, turn, ctx, run, policy) = makeRuntime(echoRegistry());
       final batch =
           await runBatch(runtime, [ToolCall(name: 'nope.nope', arguments: {})], turn, ctx, run, policy);
       expect(batch.results[0].ok, isFalse);
-      expect(batch.results[0].observation, contains('find_tools'));
+      expect(batch.results[0].observation, isNot(contains('meta.tool.find')));
     });
   });
 

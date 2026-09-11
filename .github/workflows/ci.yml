@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - name: Install
+        run: dart pub get
+      - name: Generated definitions are up to date
+        run: |
+          dart run tool/generate_defs.dart
+          git diff --exit-code lib/src/builtin/defs.g.dart
+      - name: Analyze
+        run: dart analyze --fatal-infos
+      - name: Test
+        run: dart test test/unit test/acceptance

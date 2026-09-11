@@ -7,6 +7,7 @@
 // (send/runJob/resume/invoke), never a sync wrapper around an event loop,
 // so there is no "sync call inside a running loop" failure mode to test.
 import 'dart:async';
+import 'dart:io';
 
 import 'package:state_projection_loop/state_projection_loop.dart';
 import 'package:test/test.dart';
@@ -319,6 +320,378 @@ void main() {
     test('async api', () async {
       final session = Session(ScriptedLLM([const TextStep('async reply')]));
       expect(await session.send('hi'), equals('async reply'));
+    });
+  });
+  group('disabled capabilities are invisible', () {
+    // The point of disabling: the model can neither see nor call the tool.
+    // Asserted against what actually reaches the adapter — the rendered
+    // messages and the native tool schemas — because that is the only view
+    // the model has, and every surface (schemas, pinned specs, runtime
+    // notes, tool index, candidates) lands in exactly one of those two.
+    Session buildSession(List<String> disabled, {List<Step>? steps}) {
+      final registry = Registry(disabled: disabled);
+      registry.register(
+        capabilityDict('demo.echo',
+            description: 'Echo the text back.',
+            properties: {
+              'text': {'type': 'string'},
+            },
+            required: ['text'],
+            embeddingText: 'echo repeat say'),
+        handler: (Map<String, Object?> args) => echoHandlerText(args['text'] as String? ?? ''),
+      );
+      return Session(
+        ScriptedLLM(steps ?? [const TextStep('hi')]),
+        kernel: 'K',
+        registry: registry,
+        policy: allowAllPolicy(),
+      );
+    }
+
+    (String, List<String>) sent(Session session) {
+      final request = (session.llm as ScriptedLLM).requests.last;
+      final messages = (request['messages'] as List).cast<Message>();
+      final prompt = messages
+          .map((m) => m.content)
+          .whereType<String>()
+          .join('\n');
+      final tools = (request['tools'] as List)
+          .map((t) => ((t as Map)['function'] as Map)['name'] as String)
+          .toList();
+      return (prompt, tools);
+    }
+
+    test('bundled checklist tool can be disabled', () async {
+      final session = buildSession(['planning.checklist.manage']);
+      await session.send('hello');
+      final (prompt, tools) = sent(session);
+      expect(tools, isNot(contains('planning__checklist__manage')));
+      expect(prompt.contains('planning.checklist.manage'), isFalse);
+      expect(prompt.contains('planning'), isFalse);
+    });
+
+    test('disabled tool is not discoverable', () {
+      final session = buildSession(['demo.echo']);
+      expect(session.search.search('echo repeat', k: 5, layer: 3), isEmpty);
+      expect(session.registry.get('demo.echo'), isNull);
+    });
+
+    test('disabled tool cannot be executed', () async {
+      final session = buildSession(['demo.echo'], steps: [
+        DecisionStep(ScriptedLLM.call('demo.echo', arguments: {'text': 'x'})),
+        const TextStep('done'),
+      ]);
+      await session.send('use echo');
+      final observations = session.ledger
+          .iterRun(session.run.id)
+          .where((e) => e.type == 'observation')
+          .map((e) => e.data.toString());
+      expect(observations.any((o) => o.contains('not registered')), isTrue);
+    });
+
+    test('disabling mid-session takes effect on the next turn', () async {
+      final session = buildSession([], steps: [const TextStep('one'), const TextStep('two')]);
+      await session.send('hello');
+      var (prompt, tools) = sent(session);
+      expect(tools, contains('planning__checklist__manage'));
+      expect(prompt.contains('planning.checklist.manage'), isTrue);
+
+      session.registry.disable(['planning.checklist.manage']);
+      await session.send('hello again');
+      (prompt, tools) = sent(session);
+      expect(tools, isNot(contains('planning__checklist__manage')));
+      expect(prompt.contains('planning.checklist.manage'), isFalse);
+    });
+  });
+  group('resumed run artifacts', () {
+    // A resumed run installs a fresh ArtifactStore for its new run id. The
+    // runtime must write into that one, not into a copy captured when it was
+    // constructed, or every artifact produced after the resume becomes
+    // unreachable to meta.artifact.peek.
+    test('artifacts produced after resume are readable', () async {
+      final dir = Directory.systemTemp.createTempSync('spal_resume_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final registry = Registry();
+      registry.register(
+        capabilityDict('demo.big', properties: {}, maxInlineTokens: 1),
+        handler: (Map<String, Object?> args) => 'x' * 4000,
+      );
+      final config = Config.fromMap({
+        'mode': 'job',
+        'persistence': {'ledger_directory': dir.path},
+        'artifacts': {'directory': '${dir.path}/artifacts'},
+      });
+      final first = Session(ScriptedLLM([DecisionStep(ScriptedLLM.finish('ok'))]),
+          registry: registry, config: config, policy: allowAllPolicy());
+      await first.runJob('nothing');
+
+      final resumed = Session.resumeFromLedger(
+        ScriptedLLM([
+          DecisionStep(ScriptedLLM.call('demo.big')),
+          DecisionStep(ScriptedLLM.finish('done')),
+        ]),
+        first.run.id,
+        config: config,
+        registry: registry,
+        policy: allowAllPolicy(),
+      );
+      resumed.run.state = 'RUNNING';
+      await resumed.runJob('make a big result');
+
+      final observations = resumed.ledger
+          .iterRun(resumed.run.id)
+          .where((e) => e.type == 'observation')
+          .map((e) => e.data['text'].toString())
+          .join('\n');
+      final ids = RegExp(r'art_[0-9A-Z]+').allMatches(observations).map((m) => m[0]!).toList();
+      expect(ids, isNotEmpty, reason: 'expected the oversized result to become an artifact');
+      expect(isRef({r'$artifact': ids.first}), isTrue);
+      // The store the session hands to meta.artifact.peek must be the one the
+      // runtime just wrote to.
+      expect(resumed.store.peek(ids.first), contains('xxx'));
+    });
+  });
+
+  group('state tools declare their writes', () {
+    // state.* mutates the working state, so it must not be declared as
+    // effect-free: the runtime uses that declaration to decide what may run
+    // concurrently, and a mislabelled write loses the model's stated order.
+    test('mutating state tools are not read-only', () {
+      final registry = Registry();
+      installState(registry);
+      final mutating = registry
+          .all()
+          .where((c) => c.name.startsWith('state.') && !c.name.endsWith('.get'))
+          .toList();
+      expect(mutating, isNotEmpty);
+      for (final capability in mutating) {
+        expect(Runtime.isReadOnly(capability), isFalse,
+            reason: '${capability.name} claims to be read-only');
+      }
+    });
+
+    test('state writes are auto-allowed by the default policy', () {
+      final registry = Registry();
+      installState(registry);
+      final session = Session(ScriptedLLM([]), registry: registry); // default (auto_safe) policy
+      final capability = session.registry.get('state.goal.set')!;
+      expect(session.policy.evaluate(capability, {'text': 'x'}).decision, equals('allow'));
+    });
+  });
+
+  group('seeding', () {
+    test('seeded decisions survive a round trip', () {
+      final session = Session(ScriptedLLM([]), seed: {
+        'goal': 'g',
+        'decisions': [
+          {'text': 'use sqlite', 'reason': 'single writer'},
+        ],
+      });
+      expect(session.workingState.toDict()['decisions'], equals([
+        {'text': 'use sqlite', 'reason': 'single writer'},
+      ]));
+    });
+
+    test('seeded extra is not nested under itself', () {
+      final session = Session(ScriptedLLM([]), seed: {
+        'extra': {'flags': <String, Object?>{}},
+      });
+      expect(session.workingState.extra, equals({'flags': <String, Object?>{}}));
+    });
+
+    test('unknown keys fall back to extra', () {
+      final session = Session(ScriptedLLM([]), seed: {
+        'campaign': {'chapter': 2},
+      });
+      expect(session.workingState.extra, equals({
+        'campaign': {'chapter': 2},
+      }));
+    });
+  });
+  group('approval keeps the decision intact', () {
+    // A decision parked on an approval is either shown with all of its
+    // results or not shown at all. Anything in between is a 400 from a
+    // native tool-calling provider.
+    Session buildSession(List<Step> steps) {
+      final registry = Registry();
+      registry.register(capabilityDict('demo.write', effects: [('external', '*')]),
+          handler: (Map<String, Object?> args) => 'written');
+      registry.register(capabilityDict('demo.second', effects: [('external', '*')]),
+          handler: (Map<String, Object?> args) => 'second');
+      return Session(ScriptedLLM(steps),
+          registry: registry, policy: PolicyEngine(defaultDecision: 'require_approval'));
+    }
+
+    TurnContext turnOf(Session session) => TurnContext(
+          config: session.config,
+          registry: session.registry,
+          ledger: session.ledger,
+          runId: session.run.id,
+        );
+
+    List<(String, String)> observations(Session session) => [
+          for (final e in session.ledger.iterRun(session.run.id))
+            if (e.type == 'observation')
+              (e.data['call_id'].toString(), e.data['text'].toString()),
+        ];
+
+    test('a parked decision is not projected at all', () async {
+      final session = buildSession([DecisionStep(ScriptedLLM.call('demo.write'))]);
+      await session.send('do it');
+      expect(session.run.state, equals('WAITING_FOR_APPROVAL'));
+      expect(observations(session), isEmpty);
+      final history = session.projection.get('history')!.render(turnOf(session));
+      expect(history.any((m) => m.role == 'assistant' && m.toolCalls.isNotEmpty), isFalse);
+    });
+
+    test('approval produces exactly one result per call', () async {
+      final session = buildSession([
+        DecisionStep(ScriptedLLM.call('demo.write')),
+        const TextStep('done'),
+      ]);
+      await session.send('do it');
+      session.resolveApproval('approved');
+      await session.resume();
+      final callIds = observations(session).map((o) => o.$1).toList();
+      expect(callIds.length, equals(1));
+      expect(callIds.toSet().length, equals(1));
+      expect(observations(session).first.$2, contains('written'));
+    });
+
+    test('denial answers every parked call', () async {
+      final session = buildSession([
+        DecisionStep(ScriptedLLM.calls([('demo.write', {}), ('demo.second', {})])),
+        const TextStep('done'),
+      ]);
+      await session.send('do both');
+      session.resolveApproval('denied');
+      await session.resume();
+      final obs = observations(session);
+      expect(obs.length, equals(2), reason: 'both parked calls need a result, got $obs');
+      for (final o in obs) {
+        final text = o.$2.toLowerCase();
+        expect(text.contains('denied') || text.contains('not executed'), isTrue);
+      }
+      final history = session.projection.get('history')!.render(turnOf(session));
+      expect(history.any((m) => m.role == 'assistant' && m.toolCalls.isNotEmpty), isTrue);
+    });
+  });
+  group('rewind', () {
+    test('cancels the old run and restores state', () async {
+      final session = Session(ScriptedLLM([
+        const TextStep('reply 0'),
+        const TextStep('reply 1'),
+        const TextStep('reply 2'),
+        const TextStep('after rewind'),
+      ]));
+      await session.send('msg 0');
+      await session.send('msg 1');
+      await session.send('msg 2');
+      expect(session.conversation.length, equals(6));
+      final oldRunId = session.run.id;
+
+      final irreversible = session.rewind(toTurn: 1);
+
+      expect(session.run.id, isNot(equals(oldRunId)));
+      expect(session.run.state, equals('RUNNING'));
+      expect(session.conversation.length, equals(2));
+      expect(session.conversation[0].content, equals('msg 0'));
+      expect(session.conversation[1].content, equals('reply 0'));
+      expect(irreversible, isEmpty);
+    });
+
+    test('reports external effects it cannot undo', () async {
+      final registry = Registry();
+      registry.register(
+        capabilityDict('mail.send', effects: [('external', 'smtp:*')]),
+        handler: (Map<String, Object?> args) => 'sent',
+      );
+      final session = Session(
+        ScriptedLLM([
+          DecisionStep(ScriptedLLM.call('mail.send')),
+          const TextStep('sent the email'),
+          const TextStep('reply 1'),
+        ]),
+        registry: registry,
+        policy: allowAllPolicy(),
+      );
+      await session.send('send the email');
+      await session.send('do something else');
+
+      final irreversible = session.rewind(toTurn: 1);
+      expect(irreversible.any((n) => n.contains('mail.send')), isTrue);
+    });
+
+    test('restores the working state', () async {
+      final registry = Registry();
+      installState(registry);
+      final session = Session(
+        ScriptedLLM([
+          DecisionStep(ScriptedLLM.call('state.goal.set', arguments: {'text': 'find the key'})),
+          const TextStep('goal set'),
+          DecisionStep(ScriptedLLM.call('state.goal.set', arguments: {'text': 'escape the room'})),
+          const TextStep('goal changed'),
+          const TextStep('after rewind'),
+        ]),
+        registry: registry,
+        policy: allowAllPolicy(),
+      );
+      await session.send('set goal');
+      await session.send('change goal');
+      expect(session.workingState.goal, equals('escape the room'));
+
+      session.rewind(toTurn: 1);
+      expect(session.workingState.goal, equals('find the key'));
+    });
+
+    test('the conversation continues normally afterwards', () async {
+      final session = Session(ScriptedLLM([
+        const TextStep('reply 0'),
+        const TextStep('reply 1'),
+        const TextStep('new reply after rewind'),
+      ]));
+      await session.send('msg 0');
+      await session.send('msg 1');
+      session.rewind(toTurn: 1);
+      final reply = await session.send('msg after rewind');
+      expect(reply, equals('new reply after rewind'));
+    });
+
+    test('clears the validation-failure counters', () async {
+      // The failures being counted are in the discarded history; a
+      // capability must not start the new timeline one strike from being
+      // given up on.
+      final registry = Registry();
+      registry.register(
+        capabilityDict('demo.strict',
+            properties: {
+              'n': {'type': 'integer'},
+            },
+            required: ['n']),
+        handler: (Map<String, Object?> args) => 'ok',
+      );
+      final session = Session(
+        ScriptedLLM([
+          DecisionStep(ScriptedLLM.call('demo.strict', arguments: {'n': 'not an integer'})),
+          const TextStep('oops'),
+          DecisionStep(ScriptedLLM.call('demo.strict', arguments: {'n': 'still wrong'})),
+          const TextStep('oops again'),
+          DecisionStep(ScriptedLLM.call('demo.strict', arguments: {'n': 'wrong once more'})),
+          const TextStep('done'),
+        ]),
+        registry: registry,
+        policy: allowAllPolicy(),
+      );
+      await session.send('call it');
+      await session.send('call it again');
+      session.rewind(toTurn: 1);
+      await session.send('call it once more');
+      final observations = [
+        for (final e in session.ledger.iterRun(session.run.id))
+          if (e.type == 'observation') e.data['text'].toString(),
+      ];
+      expect(observations.any((o) => o.contains('giving up')), isFalse,
+          reason: 'the counter should have been reset by the rewind');
     });
   });
 }

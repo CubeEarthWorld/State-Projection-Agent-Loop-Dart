@@ -14,6 +14,16 @@ import '../util.dart';
     ledger.append(runId, 'user_input', {'text': 'message $i ${'pad ' * 20}'});
     ledger.append(runId, 'model_response', {'text': 'reply $i', 'calls': []});
   }
+  if (nObs > 0) {
+    // Observations only ever follow the decision that asked for them; the
+    // projection drops a result whose call is not there (and vice versa).
+    ledger.append(runId, 'model_response', {
+      'text': '',
+      'calls': [
+        for (var i = 0; i < nObs; i++) {'name': 'tool', 'arguments': {}, 'id': 'c$i'},
+      ],
+    });
+  }
   for (var i = 0; i < nObs; i++) {
     ledger.append(runId, 'observation',
         {'call_id': 'c$i', 'name': 'tool', 'text': 'result $i ${'data ' * 30}'});
@@ -45,7 +55,6 @@ Projection defaultProjection(Registry registry, {String kernel = 'You are helpfu
   final sections = buildDefaultSections(
     ['kernel', 'toc', 'history', 'working_state', 'candidates'],
     kernelText: kernel,
-    pinned: registry.pinned(),
   );
   return Projection(sections, windowTokens: window);
 }
@@ -199,14 +208,23 @@ void main() {
       expect(section.render(turn)[0].content.toString(), contains('web(2)'));
     });
 
-    test('kernel is immutable across registry changes', () {
+    test('kernel is stable while the registry is unchanged', () {
       final reg = Registry();
       reg.register(capabilityDict('demo.p', pinned: true));
-      final section = KernelSection('kernel', reg.pinned());
-      final before = section.render(makeTurn(registry: reg))[0].content;
+      final section = KernelSection('kernel');
+      final first = section.render(makeTurn(registry: reg))[0].content;
+      expect(section.render(makeTurn(registry: reg))[0].content, equals(first));
+    });
+
+    test('kernel picks up a capability pinned later', () {
+      final reg = Registry();
+      reg.register(capabilityDict('demo.p', pinned: true));
+      final section = KernelSection('kernel');
+      final before = section.render(makeTurn(registry: reg))[0].content as String;
+      expect(before.contains('demo.late_pin'), isFalse);
       reg.register(capabilityDict('demo.late_pin', pinned: true));
-      final after = section.render(makeTurn(registry: reg))[0].content;
-      expect(before, equals(after));
+      final after = section.render(makeTurn(registry: reg))[0].content as String;
+      expect(after.contains('demo.late_pin'), isTrue);
     });
   });
 
@@ -288,7 +306,7 @@ void main() {
   group('BuildDefaultSections', () {
     test('unknown section name rejected', () {
       expect(
-        () => buildDefaultSections(['kernel', 'mystery'], kernelText: '', pinned: []),
+        () => buildDefaultSections(['kernel', 'mystery'], kernelText: ''),
         throwsA(isA<ProjectionError>()
             .having((e) => e.toString(), 'message', contains('Unknown section'))),
       );
@@ -298,10 +316,123 @@ void main() {
       final sections = buildDefaultSections(
         ['kernel', 'toc', 'history', 'working_state', 'candidates'],
         kernelText: 'k',
-        pinned: [],
       );
       final names = sections.map((s) => s.name).toList();
       expect(names, equals(['kernel', 'toc', 'history', 'working_state', 'candidates']));
+    });
+  });
+  group('tool call pairing', () {
+    // A native tool-calling provider rejects an assistant message whose
+    // toolCalls have no matching results, and a result with no call. The
+    // projection must never emit either, whatever produced the gap.
+    void decision(InMemoryLedger ledger, String runId, List<String> callIds,
+        {String text = ''}) {
+      ledger.append(runId, 'model_response', {
+        'text': text,
+        'calls': [
+          for (final cid in callIds) {'name': 'demo.tool', 'arguments': {}, 'id': cid},
+        ],
+      });
+    }
+
+    void result(InMemoryLedger ledger, String runId, String callId, {String text = 'ok'}) {
+      ledger.append(runId, 'observation', {'call_id': callId, 'name': 'demo.tool', 'text': text});
+    }
+
+    List<Message> render(InMemoryLedger ledger, String runId,
+        {int? fullWindow, int? compressedWindow, int? summaryWindow}) {
+      final turn = makeTurn(ledger: ledger, runId: runId);
+      final cfg = turn.config.compression;
+      if (fullWindow != null) cfg.fullWindow = fullWindow;
+      if (compressedWindow != null) cfg.compressedWindow = compressedWindow;
+      if (summaryWindow != null) cfg.summaryWindow = summaryWindow;
+      return HistorySection().render(turn);
+    }
+
+    test('a decision still awaiting its results is hidden', () {
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      ledger.append(runId, 'user_input', {'text': 'hi'});
+      decision(ledger, runId, ['c0']); // parked on an approval: no result yet
+      expect(render(ledger, runId).map((m) => m.role).toList(), equals(['user']));
+    });
+
+    test('a partly answered decision is hidden whole', () {
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      ledger.append(runId, 'user_input', {'text': 'hi'});
+      decision(ledger, runId, ['c0', 'c1']);
+      result(ledger, runId, 'c0');
+      expect(render(ledger, runId).map((m) => m.role).toList(), equals(['user']));
+    });
+
+    test('a complete decision is kept', () {
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      ledger.append(runId, 'user_input', {'text': 'hi'});
+      decision(ledger, runId, ['c0', 'c1']);
+      result(ledger, runId, 'c0');
+      result(ledger, runId, 'c1');
+      expect(render(ledger, runId).map((m) => m.role).toList(),
+          equals(['user', 'assistant', 'tool', 'tool']));
+    });
+
+    test('age-based exclusion never orphans a result', () {
+      // The oldest events fall out of the window one at a time; the cut must
+      // not land between a decision and its results.
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      decision(ledger, runId, ['c0']);
+      result(ledger, runId, 'c0');
+      for (var i = 0; i < 4; i++) {
+        ledger.append(runId, 'user_input', {'text': 'later $i'});
+      }
+      final msgs = render(ledger, runId, fullWindow: 1, compressedWindow: 2, summaryWindow: 4);
+      expect(msgs.any((m) => m.role == 'assistant' && m.toolCalls.isNotEmpty), isFalse);
+      expect(msgs.any((m) => m.role == 'tool'), isFalse);
+    });
+  });
+  group('fidelity by age', () {
+    // Older events are rendered at reduced fidelity. Only the most recent
+    // window is verbatim; this is where compressText and summarizeText enter
+    // the projection, and it was untested in this port.
+    test('compressed for older', () {
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      for (var i = 0; i < 30; i++) {
+        ledger.append(runId, 'user_input', {'text': 'msg $i ${'pad ' * 50}'});
+        ledger.append(runId, 'model_response', {'text': 'reply $i ${'pad ' * 50}'});
+      }
+      final msgs = HistorySection().render(makeTurn(ledger: ledger, runId: runId));
+      final first = msgs.first.content.toString();
+      expect(first.contains('omitted') || first.length < 500, isTrue);
+    });
+
+    test('summary for old', () {
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      for (var i = 0; i < 70; i++) {
+        ledger.append(runId, 'user_input',
+            {'text': 'message number $i with some content ${'pad ' * 30}'});
+        ledger.append(runId, 'model_response', {'text': 'reply $i ${'pad ' * 30}'});
+      }
+      final msgs = HistorySection().render(makeTurn(ledger: ledger, runId: runId));
+      expect(msgs.first.content.toString(), contains('chars]'));
+    });
+
+    test('a part list passes through instead of being stringified', () {
+      // Multimodal content is a list of parts; stringifying it would destroy
+      // the message. Only a plain string can be compressed.
+      final ledger = InMemoryLedger();
+      const runId = 'run_test';
+      final parts = [
+        {'type': 'text', 'text': 'look at this'},
+        {'type': 'image_url', 'image_url': 'https://example.invalid/a.png'},
+      ];
+      ledger.append(runId, 'user_input', {'text': parts});
+      final msgs = HistorySection().render(makeTurn(ledger: ledger, runId: runId));
+      expect(msgs.single.content, isA<List<Object?>>());
+      expect((msgs.single.content as List).length, equals(2));
     });
   });
 }

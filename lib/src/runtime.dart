@@ -34,7 +34,6 @@ import 'config.dart';
 import 'json_schema.dart';
 import 'messages.dart';
 import 'policy.dart';
-import 'projection.dart' show TurnContext;
 import 'registry.dart';
 import 'run.dart';
 import 'tokens.dart';
@@ -116,7 +115,7 @@ class BudgetState {
 
   String? exceeded(Config cfg) {
     final b = cfg.budget;
-    if (steps >= b.maxSteps) {
+    if (b.maxSteps != null && steps >= b.maxSteps!) {
       return 'max_steps (${b.maxSteps}) reached';
     }
     final total = promptTokens + completionTokens;
@@ -138,17 +137,25 @@ class BudgetState {
 // ---------------------------------------------------------------------------
 
 class Runtime {
-  Runtime(this.registry, this.store, this.config);
+  // No artifact store of its own: it uses ctx.store, the session's current
+  // one. A resumed run installs a fresh store for its new run id, and a
+  // second copy captured here would silently keep writing artifacts the
+  // session (and therefore meta.artifact.peek) could no longer read.
+  Runtime(this.registry, this.config);
 
   final Registry registry;
-  final ArtifactStore store;
   final Config config;
 
   // Capabilities whose full spec has already been projected into the
-  // conversation (pinned specs live in the kernel → pre-seeded by the
-  // session). Used by the require_spec gate.
+  // conversation. Used by the require_spec gate; pinned capabilities are
+  // exempt because their spec is always in the kernel section.
   final Set<String> seenSpecs = {};
   final Map<String, int> _consecutiveValidationFailures = {};
+
+  /// Forget per-capability validation-failure counts. Called on rewind: the
+  /// failures being counted are in the discarded history, so a capability
+  /// must not start the new timeline already one strike from "giving up".
+  void resetValidationFailures() => _consecutiveValidationFailures.clear();
 
   // -- public ---------------------------------------------------------------
 
@@ -159,7 +166,6 @@ class Runtime {
   /// strictly in the order the model asked for it.
   Future<ExecuteBatchResult> execute(
     List<ToolCall> calls,
-    TurnContext turn,
     ToolContext ctx,
     Run run,
     PolicyEngine policy,
@@ -224,7 +230,7 @@ class Runtime {
         ));
         return ExecuteBatchResult(results: results, halted: true);
       }
-      if (_isReadOnly(capability)) {
+      if (Runtime.isReadOnly(capability)) {
         buffer.add((call, capability, args));
       } else {
         await flush();
@@ -246,7 +252,6 @@ class Runtime {
     Run run,
     ToolContext ctx,
     PolicyEngine policy,
-    TurnContext turn,
   ) async {
     final pending = run.pendingCalls;
     if (pending.isEmpty) return ExecuteBatchResult(results: [], halted: false);
@@ -257,9 +262,12 @@ class Runtime {
         : null;
     if (resolved != null && resolved.resolution == 'denied') {
       final deniedCommand = run.commands[resolved.commandId];
-      final observation =
-          'Approval denied: ${deniedCommand?.capabilityName ?? firstCall.name} was not executed.';
+      final deniedName = deniedCommand?.capabilityName ?? firstCall.name;
+      final rest = pending.skip(1).toList();
       run.pendingCalls = [];
+      // Every parked call needs its own result: the denial cancels the rest
+      // of the decision too, and a call left without one would take the whole
+      // decision out of the projection.
       return ExecuteBatchResult(
         results: [
           ToolResult(
@@ -267,9 +275,17 @@ class Runtime {
             ok: false,
             outcome: 'denied',
             error: 'approval_denied',
-            observation: observation,
+            observation: 'Approval denied: $deniedName was not executed.',
             commandId: deniedCommand?.id,
           ),
+          for (final call in rest)
+            ToolResult(
+              call: call,
+              ok: false,
+              outcome: 'denied',
+              error: 'approval_denied',
+              observation: 'Not executed: the approval for $deniedName was denied.',
+            ),
         ],
         halted: false,
       );
@@ -291,7 +307,7 @@ class Runtime {
           await _executeOne(capability, args, ctx, run, firstCall, command: approved));
     }
     run.pendingCalls = [];
-    final rest = await execute(pending.sublist(1), turn, ctx, run, policy);
+    final rest = await execute(pending.sublist(1), ctx, run, policy);
     results.addAll(rest.results);
     return ExecuteBatchResult(results: results, halted: rest.halted);
   }
@@ -303,18 +319,25 @@ class Runtime {
     final capability = registry.get(call.name);
     if (capability == null) {
       final toc = registry.tocText();
+      // Never point at a search tool that is itself absent or disabled: a
+      // capability the model cannot reach must not be advertised.
+      final hint = registry.contains('meta.tool.find')
+          ? ' Use meta.tool.find(query) to locate the right one.'
+          : '';
       return ToolResult(
         call: call,
         ok: false,
         outcome: 'failed',
         error: 'unknown_capability',
         observation: 'Error: capability "${call.name}" is not registered. '
-            'Tool index: ${toc.isNotEmpty ? toc : '(empty)'}. '
-            'Use find_tools(query) to locate the right one.',
+            'Tool index: ${toc.isNotEmpty ? toc : '(empty)'}.$hint',
       );
     }
 
-    if (capability.discovery.requireSpec && !seenSpecs.contains(capability.name)) {
+    // A pinned capability's full spec is already in the kernel section, so
+    // the gate is satisfied by construction — no pre-seeding needed.
+    final needsSpec = capability.discovery.requireSpec && !capability.discovery.pinned;
+    if (needsSpec && !seenSpecs.contains(capability.name)) {
       seenSpecs.add(capability.name);
       return ToolResult(
         call: call,
@@ -366,7 +389,7 @@ class Runtime {
     return (capability, args);
   }
 
-  static bool _isReadOnly(Capability capability) {
+  static bool isReadOnly(Capability capability) {
     // Mirrors PolicyEngine.evaluate: undeclared effects are treated as the
     // most restrictive kind, so an author who forgot to declare effects
     // doesn't also get free parallel execution.
@@ -402,7 +425,7 @@ class Runtime {
       );
     }
     final resolved = capability.execution.resolveHandles
-        ? (store.resolveArgs(args) as Map).cast<String, Object?>()
+        ? ((ctx.store! as ArtifactStore).resolveArgs(args) as Map).cast<String, Object?>()
         : args;
     final attempts = capability.execution.retries + 1 < 1 ? 1 : capability.execution.retries + 1;
     final start = _now();
@@ -414,7 +437,7 @@ class Runtime {
         final value = await _invoke(handler, capability, resolved, callCtx)
             .timeout(Duration(milliseconds: (capability.execution.timeoutS * 1000).round()));
         final elapsed = _now() - start;
-        final (observation, artifactId) = _observationFor(capability, value);
+        final (observation, artifactId) = _observationFor(capability, value, ctx.store! as ArtifactStore);
         run.recordOutcome(command, 'ok', resultRef: artifactId);
         return ToolResult(
           call: call,
@@ -474,7 +497,8 @@ class Runtime {
 
   // -- output policy --------------------------------------------------------
 
-  (String, String?) _observationFor(Capability capability, Object? value) {
+  (String, String?) _observationFor(
+      Capability capability, Object? value, ArtifactStore store) {
     final text = serializeValue(value);
     final policy = capability.execution.outputPolicy;
     final threshold = policy.maxInlineTokens ?? config.artifacts.inlineThresholdTokens;
@@ -491,9 +515,10 @@ class Runtime {
       preview: policy.preview,
       previewTokens: config.artifacts.previewTokens,
     );
-    return (
-      '$refText\nUse peek(artifact={"\$artifact": "${record.id}"}, query=..., range=...) to inspect further.',
-      record.id,
-    );
+    final hint = registry.contains('meta.artifact.peek')
+        ? '\nUse meta.artifact.peek(artifact={"\$artifact": "${record.id}"}, '
+            'query=..., range=...) to inspect further.'
+        : '';
+    return ('$refText$hint', record.id);
   }
 }

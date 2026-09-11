@@ -243,3 +243,29 @@ dart pub get
 dart analyze
 dart test
 ```
+
+## Disabling tools
+
+Any capability can be hidden from the model — bundled ones included:
+
+```dart
+final registry = Registry(disabled: ['planning.checklist.manage', 'debug/*']);
+final session = Session(llm, registry: registry);
+
+session.registry.disable(['my.dangerous.tool']);   // mid-session, e.g. per sub-agent
+session.registry.enable(['my.dangerous.tool']);
+```
+
+Entries match a capability name, a category, or a category prefix
+(`"cat/*"`) — the same rule `subset()` uses, so `subset()` is the allow-list
+and `disable()` the deny-list.
+
+A disabled capability is gone from **every** surface the model can see: the
+native tool schemas, the pinned specs and runtime notes in the kernel, the
+tool index, layer-2 candidates, `meta.tool.find`, and execution (it fails as
+`unknown_capability`). Both `Registry.all_` and `Registry.get()` skip
+disabled entries and everything else derives from those two, so there is no
+surface left to leak through. The deny-list is by *name*, not by registered
+object, so a bundled tool that installs itself (`ensureMetaTools`) cannot
+re-appear by registering again.
+

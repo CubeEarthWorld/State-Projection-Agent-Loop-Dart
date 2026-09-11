@@ -7,6 +7,8 @@
 /// parameters, `FINISH_SCHEMA`, etc.).
 library;
 
+import 'serialization.dart';
+
 bool _typeOk(String expected, Object? value) {
   switch (expected) {
     case 'string':
@@ -28,14 +30,19 @@ bool _typeOk(String expected, Object? value) {
   }
 }
 
-String _typeName(Object? value) {
-  if (value == null) return 'Null';
-  if (value is bool) return 'bool';
-  if (value is int) return 'int';
-  if (value is double) return 'double';
-  if (value is String) return 'String';
-  if (value is List) return 'List';
-  if (value is Map) return 'Map';
+/// Name a value's type in the JSON Schema vocabulary.
+///
+/// The message this feeds is a self-repair prompt sent to the model, so it
+/// names types the way the schema beside it does — and identically in the
+/// Python package, which would otherwise say "str" where this said "String".
+String jsonTypeName(Object? value) {
+  if (value == null) return 'null';
+  if (value is bool) return 'boolean';
+  if (value is int) return 'integer';
+  if (value is double) return 'number';
+  if (value is String) return 'string';
+  if (value is List) return 'array';
+  if (value is Map) return 'object';
   return value.runtimeType.toString();
 }
 
@@ -47,13 +54,13 @@ String? miniValidate(Map<String, Object?> schema, Object? value, [String path = 
   if (t != null) {
     final types = t is List ? t.cast<String>() : [t as String];
     if (!types.any((x) => _typeOk(x, value))) {
-      return '$where: expected type $t, got ${_typeName(value)}';
+      return '$where: expected type ${dumps(t)}, got ${jsonTypeName(value)}';
     }
   }
   if (schema.containsKey('enum')) {
     final enumValues = schema['enum'] as List;
     if (!enumValues.contains(value)) {
-      return '$where: $value is not one of $enumValues';
+      return '$where: ${dumps(value)} is not one of ${dumps(enumValues)}';
     }
   }
   if (value is num && value is! bool) {
@@ -65,10 +72,14 @@ String? miniValidate(Map<String, Object?> schema, Object? value, [String path = 
     }
   }
   if (value is String) {
-    if (schema.containsKey('minLength') && value.length < (schema['minLength'] as num)) {
+    // Characters, not UTF-16 code units: the checklist store enforces its
+    // own limits in characters, and a schema that disagreed would reject
+    // text the store would have accepted.
+    final length = value.runes.length;
+    if (schema.containsKey('minLength') && length < (schema['minLength'] as num)) {
       return '$where: shorter than minLength ${schema['minLength']}';
     }
-    if (schema.containsKey('maxLength') && value.length > (schema['maxLength'] as num)) {
+    if (schema.containsKey('maxLength') && length > (schema['maxLength'] as num)) {
       return '$where: longer than maxLength ${schema['maxLength']}';
     }
   }
@@ -76,7 +87,7 @@ String? miniValidate(Map<String, Object?> schema, Object? value, [String path = 
     final valueMap = value.cast<String, Object?>();
     for (final req in (schema['required'] as List? ?? [])) {
       if (!valueMap.containsKey(req)) {
-        return '$where: missing required property "$req"';
+        return '$where: missing required property ${dumps(req)}';
       }
     }
     final props = (schema['properties'] as Map?)?.cast<String, Object?>() ?? {};
@@ -93,7 +104,7 @@ String? miniValidate(Map<String, Object?> schema, Object? value, [String path = 
     if (schema['additionalProperties'] == false) {
       final extra = valueMap.keys.toSet().difference(props.keys.toSet()).toList()..sort();
       if (extra.isNotEmpty) {
-        return '$where: unexpected properties $extra';
+        return '$where: unexpected properties ${dumps(extra)}';
       }
     }
   }
@@ -140,7 +151,7 @@ Map<String, Object?> applyDefaults(Map<String, Object?> schema, Map<String, Obje
 /// Return an error message, or null when the arguments pass.
 String? validateArgs(Map<String, Object?> schema, Object? args) {
   if (args is! Map) {
-    return 'arguments must be a JSON object, got ${_typeName(args)}';
+    return 'arguments must be a JSON object, got ${jsonTypeName(args)}';
   }
   return miniValidate(schema, args.cast<String, Object?>());
 }

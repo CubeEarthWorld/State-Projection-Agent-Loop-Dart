@@ -79,7 +79,6 @@ class ApprovalRequest {
     required this.effects,
     required this.reason,
     required this.policyRevision,
-    required this.capabilityVersion,
     this.expiresAt,
     this.resolution, // "approved" | "denied" | "expired" | null (pending)
     this.resolvedAt,
@@ -90,7 +89,6 @@ class ApprovalRequest {
   final List<Effect> effects;
   final String reason;
   final int policyRevision;
-  final int capabilityVersion;
   double? expiresAt;
   String? resolution;
   double? resolvedAt;
@@ -143,7 +141,7 @@ class Run {
     state = newState;
   }
 
-  void complete(Object? result, {String? resultRef}) {
+  void complete(Object? result) {
     this.result = result;
     transition('COMPLETED', reason: 'finish');
   }
@@ -195,7 +193,6 @@ class Run {
       effects: effects,
       reason: reason,
       policyRevision: policyRevision,
-      capabilityVersion: 1,
       expiresAt: expiresAt,
     );
     pendingApproval = request;
@@ -275,7 +272,6 @@ class Run {
                     {'kind': e.kind, 'resource': e.resource},
                 ],
                 'policy_revision': pendingApproval!.policyRevision,
-                'capability_version': pendingApproval!.capabilityVersion,
                 'expires_at': pendingApproval!.expiresAt,
               },
         'pending_calls': [
@@ -323,7 +319,6 @@ class Run {
         ],
         reason: pa['reason'] as String,
         policyRevision: (pa['policy_revision'] as num).toInt(),
-        capabilityVersion: (pa['capability_version'] as num).toInt(),
         expiresAt: (pa['expires_at'] as num?)?.toDouble(),
       );
     }
@@ -344,7 +339,6 @@ class Run {
         effects: [],
         reason: '',
         policyRevision: 0,
-        capabilityVersion: 1,
         resolution: lra['resolution'] as String?,
       );
     }

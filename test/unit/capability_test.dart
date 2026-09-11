@@ -58,34 +58,25 @@ void main() {
     });
   });
 
-  group('ConcurrencyPolicy', () {
-    test('exclusive_resource requires resourceKey', () {
-      expect(() => ConcurrencyPolicy(mode: 'exclusive_resource'), throwsArgumentError);
-      ConcurrencyPolicy(mode: 'exclusive_resource', resourceKey: 'db:accounts');
+  group('read-only classification', () {
+    // The runtime treats undeclared effects as the most restrictive kind, so
+    // a capability that forgot to declare them never gets free parallel
+    // execution.
+    test('no effects declared is not read-only', () {
+      expect(Runtime.isReadOnly(Capability(name: 'demo.thing')), isFalse);
     });
 
-    test('invalid mode', () {
-      expect(() => ConcurrencyPolicy(mode: 'whenever'), throwsArgumentError);
-    });
-  });
-
-  group('IsPure', () {
-    test('no effects declared is not pure', () {
-      final cap = Capability(name: 'demo.thing');
-      expect(cap.isPure, isFalse);
-    });
-
-    test('none effect is pure', () {
+    test('none effect is read-only', () {
       final cap = Capability(name: 'demo.thing', effects: [Effect(kind: 'none')]);
-      expect(cap.isPure, isTrue);
+      expect(Runtime.isReadOnly(cap), isTrue);
     });
 
-    test('write effect is not pure', () {
+    test('write effect is not read-only', () {
       final cap = Capability(
         name: 'demo.thing',
         effects: [Effect(kind: 'write', resource: 'workspace:*')],
       );
-      expect(cap.isPure, isFalse);
+      expect(Runtime.isReadOnly(cap), isFalse);
     });
   });
 

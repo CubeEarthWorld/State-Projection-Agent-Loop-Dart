@@ -27,6 +27,7 @@ import 'policy.dart';
 import 'projection.dart';
 import 'registry.dart';
 import 'run.dart';
+import 'serialization.dart';
 import 'runtime.dart';
 import 'tokens.dart';
 import 'working_state.dart';
@@ -85,26 +86,35 @@ class Session {
     search = ToolSearch(this.registry, embedder: embedder, vector: this.config.discovery.vector);
 
     _kernelText = kernel;
-    final pinned = this.registry.pinned();
     final sectionList = sections ??
         buildDefaultSections(
           this.config.projection.sections,
           kernelText: kernel,
-          pinned: pinned,
           extra: extraSections,
         );
     projection = Projection(sectionList, windowTokens: this.config.projection.windowTokens);
-    runtime = Runtime(this.registry, store, this.config);
-    runtime.seenSpecs.addAll(pinned.map((c) => c.name));
+    runtime = Runtime(this.registry, this.config);
 
-    workingState = WorkingState();
-    for (final entry in (seed ?? {}).entries) {
-      _seedWorkingState(entry.key, entry.value);
-    }
+    // Typed fields go through the same parser snapshots use, so a seeded
+    // `decisions` becomes RecordedDecision objects rather than raw maps that
+    // blow up on the next toDict(). Anything else is app-specific state and
+    // lands in `extra`, the documented escape hatch.
+    final seedMap = seed ?? const <String, Object?>{};
+    workingState = WorkingState.fromDict({
+      for (final e in seedMap.entries)
+        if (workingStateFields.contains(e.key)) e.key: e.value,
+    });
+    workingState.extra.addAll({
+      for (final e in seedMap.entries)
+        if (!workingStateFields.contains(e.key)) e.key: e.value,
+    });
 
     budget = BudgetState();
 
-    _active = LinkedHashSet<String>.from(pinned.map((c) => c.name));
+    // Recently used non-pinned tools (an LRU). Pinned capabilities are added
+    // by _apiTools straight from the registry, so they are never tracked here
+    // and can never be evicted.
+    _active = LinkedHashSet<String>();
     this.ledger.append(
         run.id, 'run_state_changed', {'from': 'RUNNING', 'to': 'RUNNING', 'reason': 'created'});
     _snapshot();
@@ -131,39 +141,6 @@ class Session {
   int _idleTurns = 0;
   bool _budgetGraceUsed = false;
   bool _locked = false;
-
-  void _seedWorkingState(String key, Object? value) {
-    if (key == 'checklists') {
-      workingState.checklists = ChecklistStore.fromDict(value);
-      return;
-    }
-    switch (key) {
-      case 'goal':
-        workingState.goal = value?.toString() ?? '';
-      case 'acceptance_criteria':
-        workingState.acceptanceCriteria
-          ..clear()
-          ..addAll(((value as List?) ?? []).cast<String>());
-      case 'constraints':
-        workingState.constraints
-          ..clear()
-          ..addAll(((value as List?) ?? []).cast<String>());
-      case 'confirmed_facts':
-        workingState.confirmedFacts
-          ..clear()
-          ..addAll(((value as List?) ?? []).cast<String>());
-      case 'open_questions':
-        workingState.openQuestions = ((value as List?) ?? []).cast<String>();
-      case 'next_actions':
-        workingState.nextActions = ((value as List?) ?? []).cast<String>();
-      case 'artifact_refs':
-        workingState.artifactRefs
-          ..clear()
-          ..addAll(((value as List?) ?? []).cast<String>());
-      default:
-        workingState.extra[key] = value;
-    }
-  }
 
   static PolicyEngine _defaultPolicy() {
     final engine = PolicyEngine(defaultDecision: 'require_approval');
@@ -233,8 +210,7 @@ class Session {
       if (run.state != 'RUNNING') {
         throw RunStateError('Run ${run.id} is not resumable from state ${run.state}');
       }
-      final turn = _newTurn();
-      final batch = await runtime.resumePending(run, _toolContext(), policy, turn);
+      final batch = await runtime.resumePending(run, _toolContext(), policy);
       _applyBatch(batch);
       _snapshot();
       if (batch.halted) return run.pendingApproval;
@@ -246,9 +222,8 @@ class Session {
 
   Future<Object?> invoke(String capabilityName, [Map<String, Object?>? arguments]) async {
     return _guarded(() async {
-      final turn = _newTurn();
       final call = ToolCall(name: capabilityName, arguments: arguments ?? {});
-      final batch = await runtime.execute([call], turn, _toolContext(), run, policy);
+      final batch = await runtime.execute([call], _toolContext(), run, policy);
       _applyBatch(batch, record: false);
       _snapshot();
       if (batch.halted) return run.pendingApproval;
@@ -268,13 +243,13 @@ class Session {
     final newSession = Session(
       llm,
       kernel: _kernelText,
-      config: Config.fromMap(config.toMap()),
+      config: Config.fromMap(deepCopy(config.toMap())),
       registry: registry,
       embedder: search.embedder,
       spawnLlmFactory: spawnLlmFactory,
       policy: policy,
     );
-    newSession.workingState = WorkingState.fromDict(workingState.toDict());
+    newSession.workingState = WorkingState.fromDict(deepCopy(workingState.toDict()));
     final renderable = ledger
         .iterRun(run.id)
         .where((e) => renderableTypes.contains(e.type))
@@ -292,9 +267,17 @@ class Session {
     return (newSession, _irreversibleEffects());
   }
 
-  List<String> _irreversibleEffects() {
+  /// External effects this run already committed — a sent email, a pushed
+  /// commit. Neither branching nor rewinding can undo them, so both report
+  /// them; [upToTurn] stops the scan at the cut point.
+  List<String> _irreversibleEffects({int? upToTurn}) {
     final notices = <String>[];
+    var userCount = 0;
     for (final event in ledger.iterRun(run.id)) {
+      if (event.type == 'user_input' && upToTurn != null) {
+        if (userCount >= upToTurn) break;
+        userCount++;
+      }
       if (event.type != 'command_completed') continue;
       final command = run.commands[event.data['command_id']];
       if (command == null) continue;
@@ -482,7 +465,7 @@ class Session {
 
       _idleTurns = 0;
       ledger.append(run.id, 'decision_validated', {'ok': true, 'finish': false});
-      final batch = await runtime.execute(resolvedCalls, turn, _toolContext(), run, policy);
+      final batch = await runtime.execute(resolvedCalls, _toolContext(), run, policy);
       _applyBatch(batch);
       _snapshot();
       if (batch.halted) return run.pendingApproval;
@@ -491,7 +474,12 @@ class Session {
 
   void _applyBatch(ExecuteBatchResult batch, {bool record = true}) {
     for (final result in batch.results) {
-      if (record) {
+      // A call parked on an approval has no result yet. Recording a
+      // placeholder observation would either be overwritten by the real one
+      // on resume (two results for one call) or stand in for a call that
+      // never ran; instead the whole decision stays out of the projection
+      // until it completes — see pairToolCalls.
+      if (record && result.outcome != 'waiting_approval') {
         _observe(result.call.id, result.call.name, result.observation);
       }
       if (result.ok) {
@@ -565,8 +553,10 @@ class Session {
     for (final event in events.reversed) {
       final msgDict = eventToMessage(event);
       if (msgDict != null && msgDict['role'] == role) {
-        final content = (msgDict['content'] ?? '').toString();
-        if (content.isNotEmpty) return content;
+        // A part list is not a search query; keep looking further back
+        // rather than stringifying it.
+        final content = msgDict['content'];
+        if (content is String && content.isNotEmpty) return content;
       }
     }
     return '';
@@ -596,17 +586,8 @@ class Session {
   void _activate(String name) {
     _active.remove(name);
     _active.add(name);
-    final pinnedNames = registry.pinned().map((c) => c.name).toSet();
     while (_active.length > _activeToolCap) {
-      String? toRemove;
-      for (final candidate in _active) {
-        if (!pinnedNames.contains(candidate)) {
-          toRemove = candidate;
-          break;
-        }
-      }
-      if (toRemove == null) break;
-      _active.remove(toRemove);
+      _active.remove(_active.first);
     }
   }
 
@@ -649,7 +630,7 @@ class Session {
   /// Returns a list of irreversible external effects that already executed
   /// and cannot be undone.
   List<String> rewind({required int toTurn}) {
-    final irreversible = _irreversibleEffectsUpTo(toTurn);
+    final irreversible = _irreversibleEffects(upToTurn: toTurn);
     final allEvents = ledger.iterRun(run.id).toList();
     final renderable = allEvents.where((e) => renderableTypes.contains(e.type)).toList();
 
@@ -697,35 +678,11 @@ class Session {
     _idleTurns = 0;
     _budgetGraceUsed = false;
     _active.clear();
-    _active.addAll(registry.pinned().map((c) => c.name));
     runtime.seenSpecs.clear();
-    runtime.seenSpecs.addAll(registry.pinned().map((c) => c.name));
+    runtime.resetValidationFailures();
     _snapshot();
 
     return irreversible;
-  }
-
-  List<String> _irreversibleEffectsUpTo(int toTurn) {
-    final notices = <String>[];
-    var userCount = 0;
-    for (final event in ledger.iterRun(run.id)) {
-      if (event.type == 'user_input') {
-        if (userCount >= toTurn) break;
-        userCount++;
-      }
-      if (event.type != 'command_completed') continue;
-      final command = run.commands[event.data['command_id']];
-      if (command == null) continue;
-      final capabilityName = command.capabilityName.contains('@')
-          ? command.capabilityName.substring(0, command.capabilityName.lastIndexOf('@'))
-          : command.capabilityName;
-      final capability = registry.get(capabilityName);
-      if (capability != null && capability.effects.any((e) => e.kind == 'external')) {
-        notices.add(
-            '${capability.qualifiedName} (command ${command.id}) already ran and cannot be undone');
-      }
-    }
-    return notices;
   }
 
   void _noteUsage(Decision decision, List<Message> messages) {

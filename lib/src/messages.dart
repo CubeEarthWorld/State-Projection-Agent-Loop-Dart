@@ -5,7 +5,6 @@
 /// multimodal input can pass through without core changes.
 library;
 
-import 'tokens.dart';
 
 /// Role constants. Tool results MUST use [observation] so untrusted data
 /// stays structurally distinct from instructions (invariant I6; mitigation,
@@ -22,7 +21,7 @@ String newCallId() {
   return 'call_$_callCounter';
 }
 
-class ToolCall implements TokenEstimableCall {
+class ToolCall {
   ToolCall({
     required this.name,
     Map<String, Object?>? arguments,
@@ -31,10 +30,8 @@ class ToolCall implements TokenEstimableCall {
   })  : arguments = arguments ?? <String, Object?>{},
         id = id ?? newCallId();
 
-  @override
   final String name;
 
-  @override
   final Map<String, Object?> arguments;
 
   final String id;
@@ -58,7 +55,7 @@ class ToolCall implements TokenEstimableCall {
       );
 }
 
-class Message implements TokenEstimable {
+class Message {
   Message({
     required this.role,
     this.content = '',
@@ -69,13 +66,10 @@ class Message implements TokenEstimable {
   })  : toolCalls = toolCalls ?? <ToolCall>[],
         meta = meta ?? <String, Object?>{};
 
-  @override
   final String role;
 
-  @override
   final Object? content;
 
-  @override
   final List<ToolCall> toolCalls;
 
   final String? toolCallId;

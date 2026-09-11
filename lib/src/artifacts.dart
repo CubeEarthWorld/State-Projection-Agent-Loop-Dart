@@ -22,6 +22,7 @@ import 'dart:io';
 
 import 'ids.dart';
 import 'tokens.dart';
+import 'serialization.dart';
 
 const String refKey = r'$artifact';
 
@@ -150,14 +151,45 @@ class ArtifactStore {
       'text': record.text,
     };
     File('${runDir.path}/${record.id}.json')
-        .writeAsStringSync(jsonEncode(payload), encoding: utf8);
+        .writeAsStringSync(dumps(payload), encoding: utf8);
   }
 
-  Object? get(String aid) => _records[aid]!.value;
+  /// Recover a persisted record written by an earlier process.
+  ///
+  /// Only the serialized text survives a restart, so the recovered value is
+  /// that text — enough for meta.artifact.peek, which is the whole point of
+  /// persisting: a resumed run can still inspect a payload that was too
+  /// large to keep in the ledger body.
+  ArtifactRecord? _load(String aid) {
+    final dir = directory;
+    if (dir == null) return null;
+    final file = File('${dir.path}/$runId/$aid.json');
+    if (!file.existsSync()) return null;
+    final payload = (jsonDecode(file.readAsStringSync()) as Map).cast<String, Object?>();
+    final text = payload['text'] as String;
+    final record = ArtifactRecord(
+      id: payload['id'] as String,
+      runId: payload['run_id'] as String,
+      value: text,
+      text: text,
+      typeName: (payload['type_name'] as String?) ?? 'String',
+      tokens: estimateTokens(text),
+      source: (payload['source'] as String?) ?? '',
+      created: (payload['created'] as num?)?.toDouble(),
+    );
+    _records[aid] = record;
+    return record;
+  }
 
-  ArtifactRecord getRecord(String aid) => _records[aid]!;
+  ArtifactRecord getRecord(String aid) {
+    final record = _records[aid] ?? _load(aid);
+    if (record == null) throw ArgumentError('Unknown artifact "$aid"');
+    return record;
+  }
 
-  bool exists(String aid) => _records.containsKey(aid);
+  Object? get(String aid) => getRecord(aid).value;
+
+  bool exists(String aid) => _records.containsKey(aid) || _load(aid) != null;
 
   /// Explicitly import a record from another store's namespace into this
   /// one (spawn child -> parent handoff).
@@ -195,7 +227,7 @@ class ArtifactStore {
       return 'Error: unknown artifact "$shown". '
           'Known artifacts: ${known.isEmpty ? '(none)' : known}';
     }
-    final record = _records[aid]!;
+    final record = getRecord(aid);
     String result;
     if (range != null && range.isNotEmpty) {
       result = _peekRange(record, range);
@@ -240,7 +272,13 @@ class ArtifactStore {
           final idx = int.parse(part.substring(1, part.length - 1));
           value = (value as List)[idx];
         } else {
-          value = (value as Map)[part];
+          final map = value as Map;
+          // A missing key is an error, not the value null: returning "null"
+          // would hand the model a fact it never asked about.
+          if (!map.containsKey(part)) {
+            throw ArgumentError('no key "$part"');
+          }
+          value = map[part];
         }
       }
       return serializeValue(value);

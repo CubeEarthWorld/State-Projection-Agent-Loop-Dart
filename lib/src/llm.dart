@@ -25,6 +25,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'messages.dart';
+import 'serialization.dart';
 
 const String finishName = 'finish';
 
@@ -105,7 +106,7 @@ final RegExp _nameFallback = RegExp(r'"(?:name|tool)"\s*:\s*"([^"]+)"');
     if (name == null) return '';
     final args = data['arguments'] ?? data['args'] ?? {};
     if (args is! Map) {
-      calls.add(ToolCall(name: name as String, arguments: {}, rawArguments: jsonEncode(args)));
+      calls.add(ToolCall(name: name as String, arguments: {}, rawArguments: dumps(args)));
     } else {
       calls.add(ToolCall(name: name as String, arguments: args.cast<String, Object?>()));
     }

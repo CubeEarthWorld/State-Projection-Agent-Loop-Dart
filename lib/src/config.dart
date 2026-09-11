@@ -97,7 +97,7 @@ class BudgetConfig {
     this.costPer1kOutput = 0.0,
   });
 
-  int maxSteps;
+  int? maxSteps; // null means no step limit, as for the other budget caps
   int? maxTokens;
   double? maxCost;
   double? maxSeconds;
@@ -159,17 +159,14 @@ class LimitsConfig {
 class PersistenceConfig {
   PersistenceConfig({
     this.ledgerDirectory,
-    this.snapshotEveryNEvents = 20,
   });
 
   // Directory for the JSONL event ledger + snapshots. null keeps the
   // ledger in-memory only (no cross-process resume).
   String? ledgerDirectory;
-  int snapshotEveryNEvents;
 
   Map<String, Object?> toMap() => {
         'ledger_directory': ledgerDirectory,
-        'snapshot_every_n_events': snapshotEveryNEvents,
       };
 }
 
@@ -251,7 +248,7 @@ class Config {
           });
         case 'budget':
           _applySub(cfg.budget, value, key, {
-            'max_steps': (v) => cfg.budget.maxSteps = (v as num).toInt(),
+            'max_steps': (v) => cfg.budget.maxSteps = (v as num?)?.toInt(),
             'max_tokens': (v) => cfg.budget.maxTokens = (v as num?)?.toInt(),
             'max_cost': (v) => cfg.budget.maxCost = (v as num?)?.toDouble(),
             'max_seconds': (v) => cfg.budget.maxSeconds = (v as num?)?.toDouble(),
@@ -276,8 +273,6 @@ class Config {
         case 'persistence':
           _applySub(cfg.persistence, value, key, {
             'ledger_directory': (v) => cfg.persistence.ledgerDirectory = v as String?,
-            'snapshot_every_n_events': (v) =>
-                cfg.persistence.snapshotEveryNEvents = (v as num).toInt(),
           });
       }
     }
