@@ -413,6 +413,7 @@ class Session {
       });
 
       final decision = extractFinish(await llm.complete(messages, apiTools.isNotEmpty ? apiTools : null));
+      _noteUsage(decision, messages, apiTools);
       final resolvedCalls = [
         for (final call in decision.calls)
           ToolCall(
@@ -423,9 +424,8 @@ class Session {
           ),
       ];
       budget.steps += 1;
-      _noteUsage(decision, messages);
       ledger.append(run.id, 'model_response', {
-        'text': decision.text.length > 2000 ? decision.text.substring(0, 2000) : decision.text,
+        'text': decision.text,
         'finish': decision.finish,
         'calls': [for (final c in resolvedCalls) {'name': c.name, 'arguments': c.arguments, 'id': c.id}],
       });
@@ -685,11 +685,23 @@ class Session {
     return irreversible;
   }
 
-  void _noteUsage(Decision decision, List<Message> messages) {
+  void _noteUsage(
+      Decision decision, List<Message> messages, List<Map<String, Object?>> apiTools) {
     if (decision.usage != null) {
       budget.noteUsage(decision.usage!.promptTokens, decision.usage!.completionTokens, config);
     } else {
-      budget.noteUsage(estimateTokens(messages), estimateTokens(decision.text), config);
+      var completionTokens = estimateTokens(decision.text);
+      for (final call in decision.calls) {
+        completionTokens += 6 + estimateTokens(call.name) +
+            estimateTokens(call.rawArguments ?? call.arguments);
+      }
+      // Adapters normalize finish(result) out of calls before returning.
+      if (decision.finish) {
+        completionTokens += 6 + estimateTokens(finishName) +
+            estimateTokens({'result': decision.result});
+      }
+      budget.noteUsage(
+          estimateTokens(messages) + estimateTokens(apiTools), completionTokens, config);
     }
   }
 
