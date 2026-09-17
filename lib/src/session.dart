@@ -71,14 +71,22 @@ class Session {
     EventLedger? ledger,
     Iterable<String> builtins = defaultBuiltins,
     void Function(Event event)? onEvent,
+    Snapshot? restored,
   })  : config = config ?? Config(),
         registry = registry ?? Registry() {
     installBuiltins(this.registry, builtins);
 
-    sessionId = newId('session');
+    // `restored` is resumeFromLedger's way in: the session continues that
+    // snapshot's run instead of starting one.
     final base = ledger ?? _makeLedger(this.config);
     this.ledger = onEvent == null ? base : ObservedLedger(base, onEvent);
-    run = Run(newId('run'), sessionId, this.ledger);
+    if (restored == null) {
+      sessionId = newId('session');
+      run = Run(newId('run'), sessionId, this.ledger);
+    } else {
+      run = Run.fromSnapshotState(restored.runId, this.ledger, restored.state);
+      sessionId = run.sessionId;
+    }
 
     this.policy = policy ?? _defaultPolicy();
 
@@ -95,29 +103,43 @@ class Session {
     projection = Projection(sectionList, windowTokens: this.config.projection.windowTokens);
     runtime = Runtime(this.registry, this.config);
 
-    // Typed fields go through the same parser snapshots use, so a seeded
-    // `decisions` becomes RecordedDecision objects rather than raw maps that
-    // blow up on the next toDict(). Anything else is app-specific state and
-    // lands in `extra`, the documented escape hatch.
-    final seedMap = seed ?? const <String, Object?>{};
-    workingState = WorkingState.fromDict({
-      for (final e in seedMap.entries)
-        if (workingStateFields.contains(e.key)) e.key: e.value,
-    });
-    workingState.extra.addAll({
-      for (final e in seedMap.entries)
-        if (!workingStateFields.contains(e.key)) e.key: e.value,
-    });
-
-    budget = BudgetState();
+    if (restored == null) {
+      // Typed fields go through the same parser snapshots use, so a seeded
+      // `decisions` becomes RecordedDecision objects rather than raw maps
+      // that blow up on the next toDict(). Anything else is app-specific
+      // state and lands in `extra`, the documented escape hatch.
+      final seedMap = seed ?? const <String, Object?>{};
+      workingState = WorkingState.fromDict({
+        for (final e in seedMap.entries)
+          if (workingStateFields.contains(e.key)) e.key: e.value,
+      });
+      workingState.extra.addAll({
+        for (final e in seedMap.entries)
+          if (!workingStateFields.contains(e.key)) e.key: e.value,
+      });
+      budget = BudgetState();
+    } else {
+      workingState = WorkingState.fromDict(
+          (restored.state['working_state'] as Map?)?.cast<String, Object?>() ?? {});
+      // Plans changed after the snapshot are in the ledger.
+      for (final event in this.ledger.iterRun(run.id, after: restored.sequence)) {
+        if (event.type == 'checklists_changed') {
+          workingState.checklists = ChecklistStore.fromDict(event.data['checklists']);
+        }
+      }
+      budget = BudgetState.fromDict(
+          (restored.state['budget'] as Map?)?.cast<String, Object?>() ?? {});
+    }
 
     // Recently used non-pinned tools (an LRU). Pinned capabilities are added
     // by _apiTools straight from the registry, so they are never tracked here
     // and can never be evicted.
     _active = LinkedHashSet<String>();
-    this.ledger.append(
-        run.id, 'run_state_changed', {'from': 'RUNNING', 'to': 'RUNNING', 'reason': 'created'});
-    _snapshot();
+    if (restored == null) {
+      this.ledger.append(
+          run.id, 'run_state_changed', {'from': 'RUNNING', 'to': 'RUNNING', 'reason': 'created'});
+      _snapshot();
+    }
   }
 
   final LLMAdapter llm;
@@ -306,14 +328,20 @@ class Session {
 
   // -- process-restart resume ------------------------------------------------
 
+  /// Continue a persisted run in a new process. Everything but [llm],
+  /// [runId] and [config] is [Session]'s own argument: code, not state, so
+  /// the caller passes what the first process passed.
   static Session resumeFromLedger(
     LLMAdapter llm,
     String runId, {
     Config? config,
+    String kernel = '',
     Registry? registry,
     PolicyEngine? policy,
     EmbeddingBackend? embedder,
+    List<Section>? sections,
     SpawnLlmFactory? spawnLlmFactory,
+    Iterable<String> builtins = defaultBuiltins,
     void Function(Event event)? onEvent,
   }) {
     final cfg = config ?? Config();
@@ -325,50 +353,26 @@ class Session {
     if (snapshot == null) {
       throw RunStateError('No snapshot found for run "$runId"; nothing to resume');
     }
-
-    final session = Session(
+    return Session(
       llm,
+      kernel: kernel,
       config: cfg,
       registry: registry,
       policy: policy,
       embedder: embedder,
+      sections: sections,
       spawnLlmFactory: spawnLlmFactory,
       ledger: ledger,
+      builtins: builtins,
       onEvent: onEvent,
+      restored: snapshot,
     );
-    session.run = Run.fromSnapshotState(runId, session.ledger, snapshot.state);
-    session.sessionId = (snapshot.state['session_id'] as String?) ?? session.sessionId;
-    session.workingState =
-        WorkingState.fromDict((snapshot.state['working_state'] as Map?)?.cast<String, Object?>() ?? {});
-    for (final event in ledger.iterRun(runId, after: snapshot.sequence)) {
-      if (event.type == 'checklists_changed') {
-        session.workingState.checklists = ChecklistStore.fromDict(event.data['checklists']);
-      }
-    }
-    final budgetData = (snapshot.state['budget'] as Map?)?.cast<String, Object?>() ?? {};
-    session.budget = BudgetState(
-      steps: (budgetData['steps'] as num?)?.toInt() ?? 0,
-      promptTokens: (budgetData['prompt_tokens'] as num?)?.toInt() ?? 0,
-      completionTokens: (budgetData['completion_tokens'] as num?)?.toInt() ?? 0,
-      cost: (budgetData['cost'] as num?)?.toDouble() ?? 0.0,
-    );
-    session.store = ArtifactStore(
-      session.run.id,
-      directory: cfg.artifacts.directory != null ? Directory(cfg.artifacts.directory!) : null,
-    );
-    return session;
   }
 
   void _snapshot() {
     final state = <String, Object?>{
-      'session_id': sessionId,
       'working_state': workingState.toDict(),
-      'budget': {
-        'steps': budget.steps,
-        'prompt_tokens': budget.promptTokens,
-        'completion_tokens': budget.completionTokens,
-        'cost': budget.cost,
-      },
+      'budget': budget.toDict(),
       ...run.toSnapshotState(),
     };
     ledger.saveSnapshot(Snapshot(

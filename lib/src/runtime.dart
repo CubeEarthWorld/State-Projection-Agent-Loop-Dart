@@ -112,6 +112,22 @@ class BudgetState {
   double cost;
   final double started;
 
+  /// What a snapshot keeps. Not [started]: the wall clock restarts with the
+  /// process that resumes the run.
+  Map<String, Object?> toDict() => {
+        'steps': steps,
+        'prompt_tokens': promptTokens,
+        'completion_tokens': completionTokens,
+        'cost': cost,
+      };
+
+  factory BudgetState.fromDict(Map<String, Object?> d) => BudgetState(
+        steps: (d['steps'] as num?)?.toInt() ?? 0,
+        promptTokens: (d['prompt_tokens'] as num?)?.toInt() ?? 0,
+        completionTokens: (d['completion_tokens'] as num?)?.toInt() ?? 0,
+        cost: (d['cost'] as num?)?.toDouble() ?? 0.0,
+      );
+
   void noteUsage(int prompt, int completion, Config cfg) {
     promptTokens += prompt;
     completionTokens += completion;

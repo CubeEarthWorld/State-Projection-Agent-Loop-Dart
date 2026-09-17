@@ -452,6 +452,32 @@ void main() {
     });
   });
 
+  group('resume from ledger', () {
+    test('resuming writes no second run and keeps the kernel', () async {
+      final dir = Directory.systemTemp.createTempSync('spal_resume_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      List<String> names() => [for (final f in dir.listSync()) f.uri.pathSegments.last]..sort();
+
+      final config = Config.fromMap({
+        'persistence': {'ledger_directory': dir.path},
+      });
+      final first = Session(ScriptedLLM([const TextStep('hello')]),
+          kernel: 'You are the deploy bot.', config: config);
+      await first.send('hi');
+      final before = names();
+
+      final llm = ScriptedLLM([const TextStep('again')]);
+      final resumed = Session.resumeFromLedger(llm, first.run.id,
+          config: config, kernel: 'You are the deploy bot.');
+      expect(names(), equals(before), reason: 'resuming must not create a second run');
+      expect((resumed.run.id, resumed.sessionId), (first.run.id, first.sessionId));
+
+      await resumed.send('and again');
+      final system = (llm.requests.first['messages'] as List<Message>).first;
+      expect(system.content.toString(), startsWith('You are the deploy bot.'));
+    });
+  });
+
   group('state tools declare their writes', () {
     // state.* mutates the working state, so it must not be declared as
     // effect-free: the runtime uses that declaration to decide what may run
