@@ -42,6 +42,36 @@ void main() {
       expect(session.run.commands.values.single.outcome, 'ok');
     });
 
+    test('calls parked behind a question still face the policy', () async {
+      final sent = <bool>[];
+      final registry = Registry();
+      registry.register(capabilityDict('mail.message.send', effects: [('external', 'smtp:*')]),
+          handler: (args) {
+        sent.add(true);
+        return 'sent';
+      });
+      final policy = PolicyEngine(defaultDecision: 'allow')
+        ..addRule('admin', Rule(decision: 'deny', capabilityPattern: 'mail.*'));
+      final session = Session(
+        ScriptedLLM([
+          DecisionStep(ScriptedLLM.calls([
+            ('meta.user.ask', {'question': 'Send it?'}),
+            ('mail.message.send', {}),
+          ])),
+          const TextStep('ok'),
+        ]),
+        registry: registry,
+        builtins: ['ask'],
+        policy: policy,
+      );
+      await session.send('mail the report');
+      session.answer('yes');
+      await session.resume();
+      expect(sent, isEmpty, reason: 'answering a question must not wave the next call past the policy');
+      expect(observations(session).firstWhere((o) => o.$1 == 'mail.message.send').$2,
+          startsWith('Denied by policy (admin): '));
+    });
+
     test('the default policy lets the model ask without approval', () {
       final session = Session(ScriptedLLM([]), builtins: ['ask']);
       final ask = session.registry.get('meta.user.ask')!;

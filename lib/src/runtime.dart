@@ -337,9 +337,10 @@ class Runtime {
     return ExecuteBatchResult(results: results, halted: false);
   }
 
-  /// Continue a run's `pendingCalls` after its approval was resolved.
+  /// Continue a run's `pendingCalls` after its approval was resolved or its
+  /// question answered.
   ///
-  /// The first pending call already has a [Command] (created when approval
+  /// After an approval the first pending call already has a [Command] (created when approval
   /// was requested) and is executed directly, reusing its `commandId` — no
   /// re-validation, no re-authorization, so an approved command cannot
   /// silently get a different idempotency key on retry. The remaining calls
@@ -387,8 +388,13 @@ class Runtime {
         halted: false,
       );
     }
-    final capability =
-        approved != null ? registry.get(approved.capabilityName) : registry.get(firstCall.name);
+    run.pendingCalls = [];
+    if (approved == null) {
+      // Parked behind a question, not an approval: nothing here was checked
+      // yet, so every call takes the normal path.
+      return execute(pending, ctx, run, policy);
+    }
+    final capability = registry.get(approved.capabilityName);
     final results = <ToolResult>[];
     if (capability == null) {
       results.add(ToolResult(
@@ -399,17 +405,14 @@ class Runtime {
         observation: 'Error: capability "${firstCall.name}" no longer registered.',
       ));
     } else {
-      final args = approved != null ? approved.arguments : firstCall.arguments;
-      results.add(await _run(capability, args, ctx, run, firstCall, command: approved));
+      results.add(await _run(capability, approved.arguments, ctx, run, firstCall, command: approved));
       if (results.last.outcome == 'waiting_user') {
         run.pendingCalls = pending.sublist(1);
         return ExecuteBatchResult(results: results, halted: true);
       }
     }
-    run.pendingCalls = [];
     final rest = await execute(pending.sublist(1), ctx, run, policy);
-    results.addAll(rest.results);
-    return ExecuteBatchResult(results: results, halted: rest.halted);
+    return ExecuteBatchResult(results: [...results, ...rest.results], halted: rest.halted);
   }
 
   // -- pre-checks: unknown capability / require_spec / validation ---------
