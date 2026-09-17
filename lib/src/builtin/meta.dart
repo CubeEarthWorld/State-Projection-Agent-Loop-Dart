@@ -45,7 +45,7 @@ String _peek(ToolContext ctx, Map<String, Object?> args) {
   final query = args['query'] as String?;
   final range = args['range'] as String?;
   if (!isRef(artifact)) {
-    return 'Error: $artifact is not a valid artifact reference; expected {"\$artifact": "<id>"}';
+    return 'Error: ${dumps(artifact)} is not a valid artifact reference; expected {"\$artifact": "<id>"}';
   }
   return ctx.store!.peek((artifact as Map)[refKey] as String, query: query, range: range);
 }

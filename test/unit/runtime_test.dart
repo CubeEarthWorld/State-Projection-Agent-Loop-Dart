@@ -166,23 +166,26 @@ void main() {
     test('adjacent read only calls run concurrently', () async {
       final reg = Registry();
 
+      // Returns only once all three have started: run serially, the first
+      // would wait forever and hit its timeout instead.
+      var started = 0;
       Future<String> slow(Map<String, Object?> args) async {
-        await Future.delayed(const Duration(milliseconds: 150));
+        started += 1;
+        while (started < 3) {
+          await Future<void>.delayed(Duration.zero);
+        }
         return 'done';
       }
 
       for (final name in ['demo.p1', 'demo.p2', 'demo.p3']) {
-        reg.register(capabilityDict(name, effects: [('read', 'workspace:*')]), handler: slow);
+        reg.register(capabilityDict(name, effects: [('read', 'workspace:*')], timeoutS: 5), handler: slow);
       }
       final (runtime, turn, ctx, run, policy) = makeRuntime(reg);
       final calls = [
         for (final n in ['demo.p1', 'demo.p2', 'demo.p3']) ToolCall(name: n, arguments: {}),
       ];
-      final stopwatch = Stopwatch()..start();
       final batch = await runBatch(runtime, calls, turn, ctx, run, policy);
-      stopwatch.stop();
       expect(batch.results.every((r) => r.ok), isTrue);
-      expect(stopwatch.elapsedMilliseconds, lessThan(400)); // 3 x 150ms would be ~450ms serially
     });
 
     test('write breaks the parallel streak', () async {

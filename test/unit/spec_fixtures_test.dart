@@ -12,6 +12,10 @@ import 'dart:io';
 import 'package:state_projection_loop/src/builtin/builtin.dart';
 import 'package:state_projection_loop/src/builtin/defs.g.dart' as defs;
 import 'package:state_projection_loop/src/capability.dart';
+import 'package:state_projection_loop/src/config.dart';
+import 'package:state_projection_loop/src/llm.dart';
+import 'package:state_projection_loop/src/messages.dart';
+import 'package:state_projection_loop/src/session.dart';
 import 'package:state_projection_loop/src/registry.dart';
 import 'package:state_projection_loop/src/compression.dart';
 import 'package:state_projection_loop/src/json_schema.dart';
@@ -89,6 +93,87 @@ void main() {
       });
     }
   });
+  test('projection matches the golden turn', () async {
+    // The same scenario as projection_scenario() in the Python package's
+    // spec/generate_fixtures.py: one whole turn as the model receives it.
+    Map<String, Object?> cap(String name, String description, Map<String, Object?> parameters,
+            {String category = 'demo', Map<String, Object?> discovery = const {}}) =>
+        {
+          'name': name,
+          'category': category,
+          'spec': {'description': description, 'parameters': parameters},
+          'discovery': discovery,
+          'effects': [
+            {'kind': 'read', 'resource': 'workspace:*'},
+          ],
+        };
+    final warehouse = {
+      'type': 'object',
+      'properties': {
+        'warehouse': {'type': 'string'},
+      },
+      'required': ['warehouse'],
+    };
+    final registry = Registry();
+    registry.register(
+        cap('demo.echo.say', 'Echo the text back. Useful for tests.', {
+          'type': 'object',
+          'properties': {
+            'text': {'type': 'string', 'default': 'hi'},
+          },
+        }, discovery: {
+          'pinned': true,
+          'kernel_note': 'Use demo.echo.say to repeat text.',
+        }),
+        handler: (args) => 'echo: ${args['text']}');
+    registry.register(
+        cap('inventory.stock.get', '在庫数を返す。Returns the stock count.', warehouse,
+            category: 'inventory', discovery: {'embedding_text': '在庫 stock warehouse inventory'}),
+        handler: (args) => {'warehouse': args['warehouse'], 'stock': 42});
+    registry.register(
+        cap('inventory.stock.audit', 'Audit the stock of a warehouse.', warehouse,
+            category: 'inventory', discovery: {'require_spec': true}),
+        handler: (args) => 'audited');
+    final llm = ScriptedLLM([
+      DecisionStep(Decision(text: 'checking', calls: [
+        ToolCall(name: 'inventory.stock.get', arguments: {'warehouse': 'tokyo'}, id: 'c1'),
+        ToolCall(name: 'inventory.stock.audit', arguments: {'warehouse': 7}, id: 'c2'),
+      ])),
+      DecisionStep(ScriptedLLM.finish('42')),
+    ]);
+    final session = Session(llm,
+        kernel: 'You are a stock agent.',
+        registry: registry,
+        config: Config.fromMap({'mode': 'job'}),
+        policy: PolicyEngine(defaultDecision: 'allow'),
+        seed: {
+          'goal': 'report tokyo stock',
+          'confirmed_facts': ['tokyo is a warehouse'],
+          'decisions': [
+            {'text': 'use inventory tools', 'reason': 'they are authoritative'},
+          ],
+          'flags': {'urgent': true},
+        });
+    await session.runJob('How much stock does the tokyo warehouse have?');
+    final request = llm.requests.last;
+    final actual = {
+      'messages': [
+        for (final m in request['messages'] as List<Message>)
+          {
+            'role': m.role,
+            'content': m.content,
+            'tool_call_id': m.toolCallId,
+            'name': m.name,
+            'tool_calls': [
+              for (final c in m.toolCalls) {'id': c.id, 'name': c.name, 'arguments': c.arguments},
+            ],
+          },
+      ],
+      'tools': request['tools'],
+    };
+    expect(jsonDecode(jsonEncode(actual)), equals(load('projection')));
+  });
+
   group('bundled tool definitions', () {
     // The definitions are data shared with the Python package. They are
     // embedded as a generated constant because Dart cannot portably read a
