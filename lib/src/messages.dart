@@ -62,9 +62,7 @@ class Message {
     List<ToolCall>? toolCalls,
     this.toolCallId,
     this.name,
-    Map<String, Object?>? meta,
-  })  : toolCalls = toolCalls ?? <ToolCall>[],
-        meta = meta ?? <String, Object?>{};
+  }) : toolCalls = toolCalls ?? <ToolCall>[];
 
   final String role;
 
@@ -74,7 +72,6 @@ class Message {
 
   final String? toolCallId;
   final String? name;
-  final Map<String, Object?> meta;
 
   String text() {
     if (content is String) return content as String;
@@ -115,7 +112,6 @@ class Message {
     List<ToolCall>? toolCalls,
     String? toolCallId,
     String? name,
-    Map<String, Object?>? meta,
   }) =>
       Message(
         role: role ?? this.role,
@@ -123,7 +119,6 @@ class Message {
         toolCalls: toolCalls ?? this.toolCalls,
         toolCallId: toolCallId ?? this.toolCallId,
         name: name ?? this.name,
-        meta: meta ?? this.meta,
       );
 }
 
@@ -163,5 +158,4 @@ class Decision {
   final bool finish;
   final Object? result;
 
-  bool get isTextOnly => calls.isEmpty && !finish;
 }

@@ -70,6 +70,7 @@ const Map<String, String> _prefixes = {
   'command': 'cmd',
   'approval': 'apr',
   'artifact': 'art',
+  'question': 'qst',
 };
 
 /// A prefixed ULID for the given entity kind, e.g. `newId("run")`.
@@ -82,12 +83,3 @@ String newId(String kind) {
   return '${prefix}_${newUlid()}';
 }
 
-/// Reverse-lookup the entity kind from a prefixed id (for assertions/logging).
-String kindOf(String entityId) {
-  final idx = entityId.indexOf('_');
-  final prefix = idx == -1 ? entityId : entityId.substring(0, idx);
-  for (final entry in _prefixes.entries) {
-    if (entry.value == prefix) return entry.key;
-  }
-  return 'unknown';
-}

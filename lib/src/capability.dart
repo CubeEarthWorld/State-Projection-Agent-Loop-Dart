@@ -21,7 +21,10 @@
 library;
 
 import 'dart:async';
+import 'context.dart';
 import 'serialization.dart';
+
+export 'context.dart' show ToolContext;
 
 const List<String> effectKinds = ['none', 'read', 'write', 'external'];
 const List<String> retrySafetyKinds = [
@@ -58,47 +61,6 @@ class Effect {
   final String resource;
 }
 
-/// Runtime services available to capability handlers.
-///
-/// A handler opts in by declaring `wantsCtx: true` on its [Capability];
-/// `commandId` is stable across retries of the *same* logical attempt and is
-/// the correct idempotency key to hand to an external API.
-class ToolContext {
-  ToolContext({
-    this.session,
-    this.registry,
-    this.store,
-    this.workingState,
-    this.config,
-    this.search,
-    this.ledger,
-    this.run,
-    this.commandId = '',
-  });
-
-  final Object? session;
-  final Object? registry;
-  final Object? store;
-  final Object? workingState;
-  final Object? config;
-  final Object? search;
-  final Object? ledger;
-  final Object? run;
-  final String commandId;
-
-  ToolContext copyWith({String? commandId}) => ToolContext(
-        session: session,
-        registry: registry,
-        store: store,
-        workingState: workingState,
-        config: config,
-        search: search,
-        ledger: ledger,
-        run: run,
-        commandId: commandId ?? this.commandId,
-      );
-}
-
 class CapabilityCard {
   CapabilityCard({this.summary = '', List<String>? tags})
       : tags = tags ?? <String>[];
@@ -133,12 +95,18 @@ class CapabilityDiscovery {
     this.requireSpec = false,
     this.embeddingText = '',
     this.noEmbed = false,
+    this.kernelNote = '',
   });
 
   final bool pinned;
   final bool requireSpec;
   final String embeddingText;
   final bool noEmbed;
+
+  /// One standing sentence for the kernel's "[Runtime notes]", shown while
+  /// the capability is pinned and reachable. Pinned only: the pin set is
+  /// the developer's own bound on kernel size.
+  final String kernelNote;
 }
 
 class OutputPolicy {
@@ -352,6 +320,7 @@ class Capability {
       requireSpec: (discD['require_spec'] as bool?) ?? false,
       embeddingText: (discD['embedding_text'] as String?) ?? '',
       noEmbed: (discD['no_embed'] as bool?) ?? false,
+      kernelNote: (discD['kernel_note'] as String?) ?? '',
     );
     final exeD = (data['execution'] as Map?)?.cast<String, Object?>() ?? {};
     final opD =

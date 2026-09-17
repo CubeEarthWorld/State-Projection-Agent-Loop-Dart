@@ -244,9 +244,23 @@ dart analyze
 dart test
 ```
 
-## Disabling tools
+## Bundled tools: packs on, names off
 
-Any capability can be hidden from the model — bundled ones included:
+Bundled tools come in **packs** (`meta`, `checklist`, `state`, `spawn`); a bare
+`Session(llm)` installs `meta` + `checklist`:
+
+```dart
+Session(llm, builtins: ['meta', 'state']);   // no checklist, with state tools
+Session(llm, builtins: []);                  // nothing bundled
+installBuiltins(registry, ['spawn']);       // same operation on your own registry
+```
+
+`installBuiltins` is idempotent and a name the registry already resolves is
+left alone, so your own definition wins; an unknown pack name throws. Any
+**pinned** capability may carry `discovery.kernel_note`, one sentence shown
+under "[Runtime notes]" while it is reachable — the bundled tools use it and
+so can yours. Per-tool control is the deny-list, for bundled and developer
+capabilities alike:
 
 ```dart
 final registry = Registry(disabled: ['planning.checklist.manage', 'debug/*']);
@@ -263,9 +277,60 @@ and `disable()` the deny-list.
 A disabled capability is gone from **every** surface the model can see: the
 native tool schemas, the pinned specs and runtime notes in the kernel, the
 tool index, layer-2 candidates, `meta.tool.find`, and execution (it fails as
-`unknown_capability`). Both `Registry.all_` and `Registry.get()` skip
+`unknown_capability`). Both `Registry.capabilities` and `Registry.get()` skip
 disabled entries and everything else derives from those two, so there is no
 surface left to leak through. The deny-list is by *name*, not by registered
-object, so a bundled tool that installs itself (`ensureMetaTools`) cannot
-re-appear by registering again.
+object, so installing a pack again cannot bring a denied tool back.
+
+Sections are asked to `shrink` from last to first when the window overflows,
+so section order is also priority; custom sections extend `Section` and go in
+via `Session(sections: ...)` or `session.addSection(...)`.
+
+## Standard agent features (each one is a switch)
+
+| Feature | Switch | What it does |
+|---|---|---|
+| Clarifying questions | pack `ask` | `meta.user.ask(question, choices?)` pauses the run in `WAITING_FOR_USER`; `send()`/`runJob()` return a `PendingQuestion`, the host calls `session.answer(text)` then `session.resume()`. The pause survives a restart like an approval does. |
+| Loop guard | `limits.max_repeats` (3; `0` off) | An identical call that failed identically, or returned the same result, `max_repeats` times within the last `limits.repeat_window` (8) calls is not executed again. Pure reads may still be polled. |
+| Structured job output | `result_schema` | In job mode `finish(result)` is validated against the JSON Schema and bounced back on failure. |
+| Observers | `Session(onEvent: fn)` | Fires after every ledger append; read-only, a throwing observer is ignored. |
+| Compaction | `compaction.trigger_ratio` (`0` off) | One extra model call folds old history into `WorkingState` as a schema-validated JSON delta (`state_folded` keeps the pre-fold state); folded events render as summaries. |
+| Skills | `skillCapability(name, text, summary: ...)` | A skill is a capability `skill.<name>.load`, so it rides the TOC, candidates and `meta.tool.find`. |
+| Toolkits | `installToolkits(registry, Directory(root), shell: true)` | Root-confined `filesystem.file.*` and `shell.command.run`; never installed unless you ask. |
+
+```dart
+final session = Session(llm, builtins: ['meta', 'checklist', 'ask'], onEvent: print,
+    config: Config.fromMap({'compaction': {'trigger_ratio': 0.8}}));
+session.registry.register(skillCapability('deploy', deploySteps, summary: 'How to deploy'));
+installToolkits(session.registry, Directory('./workspace'));
+
+var reply = await session.send('Release the service');
+if (session.run.state == 'WAITING_FOR_USER') {
+  session.answer(await askTheUser((reply as PendingQuestion).text));
+  reply = await session.resume();
+}
+```
+
+Cross-session memory is specified but not built; see [docs/roadmap.md](docs/roadmap.md).
+
+## Changes in 0.5 (pre-1.0: breaking, no aliases)
+
+- `Session(builtins: ...)` / `installBuiltins()` replace `ensureMetaTools`,
+  `ensureChecklistTool`, `installState`, `installSpawn`.
+- One `ToolContext` for sections and handlers replaces `TurnContext`;
+  `extraSections` is gone (pass `sections:`).
+- `Section.shrink` replaces the hard-coded overflow ladder;
+  `discovery.kernel_note` replaces the hard-coded runtime-note table.
+- `Registry.capabilities` replaces `all_`; `categories()` returns
+  `(total, pinned)`; `categoriesWithPinned`, `registerMany`, `Message.meta`,
+  `ToolResult.elapsedS`, four never-emitted event types and the unused
+  `WAITING_FOR_USER` state are removed.
+- `Session.activate()` and `Runtime.reset()` are public;
+  `discovery.active_tools` replaces a hard-coded LRU size.
+- `example/deepseek_live.dart`: a dart:io OpenAI-compatible adapter and a
+  live end-to-end check (`DEEPSEEK_API_KEY=... dart run example/deepseek_live.dart`).
+- Handlers receive `ToolContext`; sections receive its superset `TurnContext`,
+  so projection state never reaches a tool. Shrinking counts native schemas.
+- New standard features, each optional: `ask` pack, loop guard, `result_schema`,
+  `onEvent` observers, compaction, `skillCapability`, `installToolkits`.
 

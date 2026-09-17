@@ -1,38 +1,33 @@
-/// Resident meta capabilities: `find_tools`, `peek`, and `search_history`
-/// are always present; `spawn` is opt-in via [installSpawn].
+/// Handlers of the `meta` pack (`meta.tool.find`, `meta.artifact.peek`,
+/// `meta.history.search`) and the opt-in `spawn` pack (`meta.agent.spawn`).
 ///
-/// There is no `done` capability anymore: completion is `Decision.finish`,
-/// a property of the model's response handled directly by the session
-/// loop, not something routed through the runtime like any other call. See
+/// There is no `done` capability: completion is `Decision.finish`, a
+/// property of the model's response handled directly by the session loop,
+/// not something routed through the runtime like any other call. See
 /// `llm.dart`'s `extractFinish`.
 library;
 
 import 'dart:async';
 
-import '../artifacts.dart' show ArtifactStore, isRef, refKey;
+import '../artifacts.dart' show isRef, refKey;
 import '../capability.dart';
 import '../config.dart';
-import '../discovery.dart' show ToolSearch;
-import '../events.dart' show EventLedger;
 import '../registry.dart';
 import '../serialization.dart';
-import '../run.dart' show Run;
 import '../session.dart';
-import 'defs.g.dart';
 
 Object? _findTools(ToolContext ctx, Map<String, Object?> args) {
   final query = args['query'] as String;
   final category = args['category'] as String?;
   final k = (args['k'] as num?)?.toInt() ?? 8;
-  final search = ctx.search as ToolSearch;
-  final results = search.search(query, category: category, k: k, layer: 3);
+  final results = ctx.search!.search(query, category: category, k: k, layer: 3);
   if (results.isEmpty) {
-    final toc = (ctx.registry as Registry).tocText();
+    final toc = ctx.registry.tocText();
     return 'No tools matched "$query". Categories: ${toc.isNotEmpty ? toc : '(none)'}';
   }
   final session = ctx.session;
   if (session is Session) {
-    session.activateTools([for (final s in results) s.tool.name]);
+    session.activate([for (final s in results) s.tool.name]);
   }
   return [
     for (final s in results)
@@ -52,15 +47,14 @@ String _peek(ToolContext ctx, Map<String, Object?> args) {
   if (!isRef(artifact)) {
     return 'Error: $artifact is not a valid artifact reference; expected {"\$artifact": "<id>"}';
   }
-  final store = ctx.store as ArtifactStore;
-  return store.peek((artifact as Map)[refKey] as String, query: query, range: range);
+  return ctx.store!.peek((artifact as Map)[refKey] as String, query: query, range: range);
 }
 
 Object? _searchHistory(ToolContext ctx, Map<String, Object?> args) {
   final query = args['query'] as String;
   final k = (args['k'] as num?)?.toInt() ?? 10;
-  final ledger = ctx.ledger as EventLedger?;
-  final run = ctx.run as Run?;
+  final ledger = ctx.ledger;
+  final run = ctx.run;
   if (ledger == null || run == null) {
     return 'History search is unavailable (no ledger configured for this session).';
   }
@@ -104,7 +98,7 @@ Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
     childRegistry = parent.registry.subset(toolScope);
   } else {
     childRegistry = Registry();
-    for (final cap in parent.registry.all_) {
+    for (final cap in parent.registry.capabilities) {
       if (cap.name != 'meta.agent.spawn') {
         // no recursive swarm by default
         childRegistry.register(cap, replace: true);
@@ -131,27 +125,10 @@ Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
   return result;
 }
 
-const Map<String, Function> _handlers = {
+const Map<String, CtxHandler> metaHandlers = {
   'meta.tool.find': _findTools,
   'meta.artifact.peek': _peek,
   'meta.history.search': _searchHistory,
 };
 
-/// Register the resident meta capabilities if absent.
-void ensureMetaTools(Registry registry) {
-  for (final definition in load('meta') as List) {
-    final map = (definition as Map).cast<String, Object?>();
-    final name = map['name'] as String;
-    if (!registry.contains(name)) {
-      registry.register(map, handler: _handlers[name], wantsCtx: true);
-    }
-  }
-}
-
-/// Opt-in sub-agent capability for swarm-style setups.
-void installSpawn(Registry registry) {
-  if (!registry.contains('meta.agent.spawn')) {
-    registry.register((load('spawn') as Map).cast<String, Object?>(),
-        handler: _spawn, wantsCtx: true);
-  }
-}
+const Map<String, CtxHandler> spawnHandlers = {'meta.agent.spawn': _spawn};

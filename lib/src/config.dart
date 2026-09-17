@@ -46,6 +46,7 @@ class DiscoveryConfig {
     this.vector = 'auto', // "auto" | "on" | "off"
     this.k = 8,
     this.toc = true,
+    this.activeTools = 48,
     List<String>? querySources,
   }) : querySources = querySources ??
             ['last_user_message', 'last_model_thought', 'goal_if_exists'];
@@ -53,12 +54,15 @@ class DiscoveryConfig {
   String vector;
   int k;
   bool toc;
+  // Recently used non-pinned tools whose native schemas are re-sent each turn.
+  int activeTools;
   List<String> querySources;
 
   Map<String, Object?> toMap() => {
         'vector': vector,
         'k': k,
         'toc': toc,
+        'active_tools': activeTools,
         'query_sources': querySources,
       };
 }
@@ -140,6 +144,8 @@ class LimitsConfig {
     this.maxValidationRetries = 2,
     this.maxIdleTurns = 3,
     this.approvalExpiresS = 3600.0,
+    this.maxRepeats = 3,
+    this.repeatWindow = 8,
   });
 
   int maxValidationRetries;
@@ -148,11 +154,18 @@ class LimitsConfig {
   int maxIdleTurns;
   // Default approval TTL; null means requests never expire on their own.
   double? approvalExpiresS;
+  // Loop guard: an identical call repeated this many times inside the last
+  // repeatWindow calls (all failing, or all returning the same result) is not
+  // executed again; 0 disables the guard.
+  int maxRepeats;
+  int repeatWindow;
 
   Map<String, Object?> toMap() => {
         'max_validation_retries': maxValidationRetries,
         'max_idle_turns': maxIdleTurns,
         'approval_expires_s': approvalExpiresS,
+        'max_repeats': maxRepeats,
+        'repeat_window': repeatWindow,
       };
 }
 
@@ -170,9 +183,21 @@ class PersistenceConfig {
       };
 }
 
+class CompactionConfig {
+  CompactionConfig({this.triggerRatio = 0.0});
+
+  // When the rendered prompt exceeds this fraction of the window, one extra
+  // model call folds old history into the working state (see compaction.dart).
+  // 0 disables compaction; deterministic compression always stays on.
+  double triggerRatio;
+
+  Map<String, Object?> toMap() => {'trigger_ratio': triggerRatio};
+}
+
 class Config {
   Config({
     this.mode = 'chat', // "chat" | "job"
+    this.resultSchema,
     ProjectionConfig? projection,
     DiscoveryConfig? discovery,
     CompressionConfig? compression,
@@ -180,15 +205,20 @@ class Config {
     ArtifactsConfig? artifacts,
     LimitsConfig? limits,
     PersistenceConfig? persistence,
+    CompactionConfig? compaction,
   })  : projection = projection ?? ProjectionConfig(),
         discovery = discovery ?? DiscoveryConfig(),
         compression = compression ?? CompressionConfig(),
         budget = budget ?? BudgetConfig(),
         artifacts = artifacts ?? ArtifactsConfig(),
         limits = limits ?? LimitsConfig(),
-        persistence = persistence ?? PersistenceConfig();
+        persistence = persistence ?? PersistenceConfig(),
+        compaction = compaction ?? CompactionConfig();
 
   String mode;
+  // Job mode: JSON Schema finish(result) must satisfy; a failing result is
+  // bounced back to the model like an argument error.
+  Map<String, Object?>? resultSchema;
   final ProjectionConfig projection;
   final DiscoveryConfig discovery;
   final CompressionConfig compression;
@@ -196,9 +226,12 @@ class Config {
   final ArtifactsConfig artifacts;
   final LimitsConfig limits;
   final PersistenceConfig persistence;
+  final CompactionConfig compaction;
 
   static const Set<String> _topLevelKeys = {
     'mode',
+    'result_schema',
+    'compaction',
     'projection',
     'discovery',
     'compression',
@@ -219,6 +252,12 @@ class Config {
       switch (key) {
         case 'mode':
           cfg.mode = value as String;
+        case 'result_schema':
+          cfg.resultSchema = (value as Map?)?.cast<String, Object?>();
+        case 'compaction':
+          _applySub(cfg.compaction, value, key, {
+            'trigger_ratio': (v) => cfg.compaction.triggerRatio = (v as num).toDouble(),
+          });
         case 'projection':
           _applySub(cfg.projection, value, key, {
             'sections': (v) => cfg.projection.sections = (v as List).cast<String>(),
@@ -235,6 +274,7 @@ class Config {
             'vector': (v) => cfg.discovery.vector = v as String,
             'k': (v) => cfg.discovery.k = (v as num).toInt(),
             'toc': (v) => cfg.discovery.toc = v as bool,
+            'active_tools': (v) => cfg.discovery.activeTools = (v as num).toInt(),
             'query_sources': (v) =>
                 cfg.discovery.querySources = (v as List).cast<String>(),
           });
@@ -269,6 +309,8 @@ class Config {
             'max_idle_turns': (v) => cfg.limits.maxIdleTurns = (v as num).toInt(),
             'approval_expires_s': (v) =>
                 cfg.limits.approvalExpiresS = (v as num?)?.toDouble(),
+            'max_repeats': (v) => cfg.limits.maxRepeats = (v as num).toInt(),
+            'repeat_window': (v) => cfg.limits.repeatWindow = (v as num).toInt(),
           });
         case 'persistence':
           _applySub(cfg.persistence, value, key, {
@@ -295,6 +337,8 @@ class Config {
 
   Map<String, Object?> toMap() => {
         'mode': mode,
+        'result_schema': resultSchema,
+        'compaction': compaction.toMap(),
         'projection': projection.toMap(),
         'discovery': discovery.toMap(),
         'compression': compression.toMap(),

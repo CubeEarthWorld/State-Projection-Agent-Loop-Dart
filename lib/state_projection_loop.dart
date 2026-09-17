@@ -7,8 +7,10 @@
 library;
 
 export 'src/artifacts.dart' show ArtifactStore, ArtifactRecord, ref, isRef, refKey;
-export 'src/builtin/meta.dart' show ensureMetaTools, installSpawn;
-export 'src/builtin/state.dart' show installState;
+export 'src/builtin/builtin.dart' show installBuiltins, defaultBuiltins, builtinPacks;
+export 'src/builtin/skills.dart' show skillCapability;
+export 'src/builtin/toolkits.dart' show installToolkits;
+export 'src/compaction.dart' show foldSchema, foldInstructions, parseFoldReply, applyFoldDelta;
 export 'src/checklists.dart' show ChecklistStore, checklistStatuses, checklistContextModes;
 export 'src/capability.dart'
     show
@@ -19,7 +21,6 @@ export 'src/capability.dart'
         CapabilityExecution,
         OutputPolicy,
         Effect,
-        ToolContext,
         PlainHandler,
         CtxHandler,
         effectKinds,
@@ -35,12 +36,14 @@ export 'src/config.dart'
         BudgetConfig,
         ArtifactsConfig,
         LimitsConfig,
-        PersistenceConfig;
+        PersistenceConfig,
+        CompactionConfig;
+export 'src/context.dart' show ToolContext, TurnContext;
 export 'src/discovery.dart' show ScoredTool, ToolSearch, tokenize;
 export 'src/embeddings.dart' show EmbeddingBackend, HashingEmbedding, Vector, cosine;
 export 'src/events.dart'
-    show Event, EventLedger, InMemoryLedger, JsonlLedger, Snapshot, eventTypes, renderableTypes, eventToMessage;
-export 'src/ids.dart' show newId, newUlid, kindOf;
+    show Event, EventLedger, InMemoryLedger, JsonlLedger, ObservedLedger, Snapshot, eventTypes, renderableTypes, eventToMessage;
+export 'src/ids.dart' show newId, newUlid;
 export 'src/llm.dart'
     show
         LLMAdapter,
@@ -70,17 +73,17 @@ export 'src/projection.dart'
         Projection,
         ProjectionError,
         Section,
-        TurnContext,
         KernelSection,
         TocSection,
         HistorySection,
         CandidatesSection,
         ChecklistSection,
         WorkingStateSection,
-        buildDefaultSections;
+        buildDefaultSections,
+        runtimeNotes;
 export 'src/registry.dart' show Registry, ToolProvider;
 export 'src/run.dart'
-    show Run, RunStateError, Command, ApprovalRequest, runStates, terminalStates, commandOutcomes;
+    show Run, RunStateError, Command, ApprovalRequest, Question, PendingQuestion, runStates, terminalStates, commandOutcomes;
 export 'src/runtime.dart'
     show
         Runtime,
@@ -94,4 +97,4 @@ export 'src/session.dart' show Session, ConcurrencyError;
 export 'src/tokens.dart' show estimateTokens, estimateTextTokens, setEstimator;
 export 'src/working_state.dart' show WorkingState, RecordedDecision, workingStateFields;
 
-const String packageVersion = '0.4.0';
+const String packageVersion = '0.5.0';

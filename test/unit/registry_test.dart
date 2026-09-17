@@ -82,7 +82,7 @@ void main() {
       reg.register(capabilityDict('web.search.s2', category: 'web/search'));
       reg.register(capabilityDict('file.f1', category: 'file'));
       reg.register(capabilityDict('misc.m1', category: '')); // -> misc
-      expect(reg.categories(), equals({'file': 1, 'misc': 1, 'web/search': 2}));
+      expect(reg.categories(), equals({'file': (1, 0), 'misc': (1, 0), 'web/search': (2, 0)}));
       expect(reg.tocText(), equals('file(1) misc(1) web/search(2)'));
     });
 
