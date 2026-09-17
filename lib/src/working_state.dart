@@ -145,15 +145,7 @@ class WorkingState {
     if (extra.isNotEmpty) {
       parts.add('extra: ${dumps(extra)}');
     }
-    var body = parts.join('\n');
-    if (estimateTokens(body) > maxTokens) {
-      // Truncate the least time-critical sections first: facts, then
-      // decisions, keeping goal/constraints/open_questions/next_actions
-      // (the parts most load-bearing for not losing the thread).
-      final cutoff = maxTokens * 4;
-      body = body.length > cutoff ? body.substring(0, cutoff) : body;
-    }
-    return body;
+    return truncateToTokens(parts.join('\n'), maxTokens);
   }
 }
 

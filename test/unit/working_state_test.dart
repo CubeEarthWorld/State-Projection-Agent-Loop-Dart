@@ -13,6 +13,11 @@ void main() {
       expect(text, contains('Y was slower'));
     });
 
+    test('render keeps a Japanese state inside its token budget', () {
+      final ws = WorkingState(confirmedFacts: List.filled(10, '在庫は東京倉庫にある' * 40));
+      expect(estimateTokens(ws.render(maxTokens: 200)), lessThanOrEqualTo(200));
+    });
+
     test('isEmpty', () {
       expect(WorkingState().isEmpty(), isTrue);
       expect(WorkingState(goal: 'x').isEmpty(), isFalse);

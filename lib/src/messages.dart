@@ -5,6 +5,8 @@
 /// multimodal input can pass through without core changes.
 library;
 
+import 'ids.dart';
+
 
 /// Role constants. Tool results MUST use [observation] so untrusted data
 /// stays structurally distinct from instructions (invariant I6; mitigation,
@@ -14,12 +16,9 @@ const String kUser = 'user';
 const String kAssistant = 'assistant';
 const String kObservation = 'tool';
 
-int _callCounter = 0;
-
-String newCallId() {
-  _callCounter += 1;
-  return 'call_$_callCounter';
-}
+/// A ULID, not a counter: a counter restarts with the process and would
+/// reuse ids already in a resumed ledger, where calls pair with results by id.
+String newCallId() => newId('call');
 
 class ToolCall {
   ToolCall({

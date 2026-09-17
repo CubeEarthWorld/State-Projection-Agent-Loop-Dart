@@ -28,7 +28,7 @@ library;
 
 import 'dart:async';
 
-import 'artifacts.dart' show ArtifactStore, serializeValue, truncateToTokens;
+import 'artifacts.dart' show ArtifactStore, serializeValue;
 import 'capability.dart';
 import 'compression.dart' show contentHash;
 import 'config.dart';
