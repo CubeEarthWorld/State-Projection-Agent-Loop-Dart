@@ -304,7 +304,7 @@ class CandidatesSection extends Section {
     if (ctx.candidates.isEmpty) return const [];
     List<String> lines;
     String header;
-    if (ctx.dedupeCandidateCards && ctx.apiTools.isNotEmpty) {
+    if (ctx.config.projection.dedupeCandidateCardsAgainstSchemas && ctx.apiTools.isNotEmpty) {
       lines = [
         for (final s in ctx.candidates)
           s.tool.card.signature.isNotEmpty ? s.tool.card.signature : s.tool.name,

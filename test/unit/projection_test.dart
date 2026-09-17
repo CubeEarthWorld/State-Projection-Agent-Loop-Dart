@@ -114,7 +114,6 @@ void main() {
           capabilityDict('demo.cand', summary: 'a somewhat long description of the tool'));
       final projection = defaultProjection(reg);
       final turn = makeTurn(registry: reg, candidates: [ScoredTool(tool: cap, score: 1.0)]);
-      turn.dedupeCandidateCards = true;
       final msgs = projection.render(turn, apiTools: [cap.apiSchema()]);
       final last = msgs.last.content.toString();
       expect(last, contains('schemas sent natively'));

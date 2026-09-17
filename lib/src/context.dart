@@ -71,11 +71,9 @@ class TurnContext extends ToolContext {
     super.search,
     List<ScoredTool>? candidates,
     List<Map<String, Object?>>? apiTools,
-    this.dedupeCandidateCards = false,
   })  : candidates = candidates ?? <ScoredTool>[],
         apiTools = apiTools ?? <Map<String, Object?>>[];
 
   final List<ScoredTool> candidates;
   List<Map<String, Object?>> apiTools;
-  bool dedupeCandidateCards;
 }

@@ -413,14 +413,11 @@ class Session {
         return budgetValue;
       }
 
-      final ctx = _context();
-      final apiTools = _apiTools(ctx);
-      ctx.dedupeCandidateCards = config.projection.dedupeCandidateCardsAgainstSchemas;
-      final reserved =
-          config.projection.reservedOutputTokens + config.projection.providerOverheadTokens;
-      var messages = projection.render(ctx, apiTools: apiTools, reservedTokens: reserved);
+      var (ctx, messages) = _project();
       if (await _fold(ctx, messages)) {
-        messages = projection.render(ctx, apiTools: apiTools, reservedTokens: reserved);
+        // From scratch: shrinking the first rendering consumed its candidates
+        // and schemas, and the fold may have moved the goal.
+        (ctx, messages) = _project();
       }
       ledger.append(run.id, 'projection_compiled', {
         'tokens': estimateTokens(messages),
@@ -493,6 +490,17 @@ class Session {
       _snapshot();
       if (batch.halted) return _pending;
     }
+  }
+
+  (TurnContext, List<Message>) _project() {
+    final ctx = _context();
+    final messages = projection.render(
+      ctx,
+      apiTools: _apiTools(ctx),
+      reservedTokens:
+          config.projection.reservedOutputTokens + config.projection.providerOverheadTokens,
+    );
+    return (ctx, messages);
   }
 
   /// Compaction: when the prompt exceeds `compaction.triggerRatio` of the
