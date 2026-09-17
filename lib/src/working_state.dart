@@ -119,26 +119,19 @@ class WorkingState {
       );
 
   String render({int maxTokens = 800}) {
-    final parts = <String>[];
-    if (goal.isNotEmpty) parts.add('goal: $goal');
-    if (acceptanceCriteria.isNotEmpty) {
-      parts.add('acceptance_criteria:\n${acceptanceCriteria.map((c) => '- $c').join('\n')}');
+    final parts = <String>[if (goal.isNotEmpty) 'goal: $goal'];
+    void bullets(String name, Iterable<String> lines) {
+      if (lines.isNotEmpty) parts.add('$name:\n${lines.map((line) => '- $line').join('\n')}');
     }
-    if (constraints.isNotEmpty) {
-      parts.add('constraints:\n${constraints.map((c) => '- $c').join('\n')}');
-    }
-    if (confirmedFacts.isNotEmpty) {
-      parts.add('confirmed_facts:\n${confirmedFacts.map((c) => '- $c').join('\n')}');
-    }
-    if (decisions.isNotEmpty) {
-      parts.add('decisions:\n${decisions.map((d) => '- ${d.text}${d.reason.isNotEmpty ? ' (because: ${d.reason})' : ''}').join('\n')}');
-    }
-    if (openQuestions.isNotEmpty) {
-      parts.add('open_questions:\n${openQuestions.map((q) => '- $q').join('\n')}');
-    }
-    if (nextActions.isNotEmpty) {
-      parts.add('next_actions:\n${nextActions.map((a) => '- $a').join('\n')}');
-    }
+
+    bullets('acceptance_criteria', acceptanceCriteria);
+    bullets('constraints', constraints);
+    bullets('confirmed_facts', confirmedFacts);
+    bullets('decisions', [
+      for (final d in decisions) '${d.text}${d.reason.isNotEmpty ? ' (because: ${d.reason})' : ''}',
+    ]);
+    bullets('open_questions', openQuestions);
+    bullets('next_actions', nextActions);
     if (artifactRefs.isNotEmpty) {
       parts.add('artifact_refs: ${artifactRefs.join(', ')}');
     }

@@ -80,7 +80,7 @@ void main() {
   });
 
   test('projection budget never deletes plans', () async {
-    final cfg = Config.fromMap({
+    final cfg = Config.fromDict({
       'projection': {'window_tokens': 2000, 'reserved_output_tokens': 200}
     });
     final llm = ScriptedLLM([const TextStep('ok')]);
@@ -116,7 +116,7 @@ void main() {
     expect(Session(ScriptedLLM([])).checklists.isEmpty, true);
     final dir = Directory.systemTemp.createTempSync('checklist-test-');
     addTearDown(() => dir.deleteSync(recursive: true));
-    final cfg = Config.fromMap({
+    final cfg = Config.fromDict({
       'persistence': {'ledger_directory': dir.path}
     });
     final session = Session(
@@ -381,7 +381,7 @@ void main() {
   test('restart recovers after snapshot gap and keeps deletion', () async {
     final dir = Directory.systemTemp.createTempSync('checklist-test-');
     addTearDown(() => dir.deleteSync(recursive: true));
-    final cfg = Config.fromMap({
+    final cfg = Config.fromDict({
       'persistence': {'ledger_directory': dir.path}
     });
     final session = Session(ScriptedLLM([]), config: cfg);
@@ -409,7 +409,7 @@ void main() {
   test('completed run retains plans on restart', () async {
     final dir = Directory.systemTemp.createTempSync('checklist-test-');
     addTearDown(() => dir.deleteSync(recursive: true));
-    final cfg = Config.fromMap({
+    final cfg = Config.fromDict({
       'mode': 'job',
       'persistence': {'ledger_directory': dir.path}
     });

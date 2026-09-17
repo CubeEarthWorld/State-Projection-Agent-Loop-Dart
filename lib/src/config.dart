@@ -32,7 +32,7 @@ class ProjectionConfig {
   // description a second time.
   bool dedupeCandidateCardsAgainstSchemas;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'sections': sections,
         'window_tokens': windowTokens,
         'reserved_output_tokens': reservedOutputTokens,
@@ -58,7 +58,7 @@ class DiscoveryConfig {
   int activeTools;
   List<String> querySources;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'vector': vector,
         'k': k,
         'toc': toc,
@@ -82,7 +82,7 @@ class CompressionConfig {
   int compressedMaxLines;
   int observationMaxLines;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'full_window': fullWindow,
         'compressed_window': compressedWindow,
         'summary_window': summaryWindow,
@@ -109,7 +109,7 @@ class BudgetConfig {
   double costPer1kInput;
   double costPer1kOutput;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'max_steps': maxSteps,
         'max_tokens': maxTokens,
         'max_cost': maxCost,
@@ -132,7 +132,7 @@ class ArtifactsConfig {
   // directory (namespaced by run id) so a resumed run can recover them.
   String? directory;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'inline_threshold_tokens': inlineThresholdTokens,
         'preview_tokens': previewTokens,
         'directory': directory,
@@ -160,7 +160,7 @@ class LimitsConfig {
   int maxRepeats;
   int repeatWindow;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'max_validation_retries': maxValidationRetries,
         'max_idle_turns': maxIdleTurns,
         'approval_expires_s': approvalExpiresS,
@@ -178,7 +178,7 @@ class PersistenceConfig {
   // ledger in-memory only (no cross-process resume).
   String? ledgerDirectory;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'ledger_directory': ledgerDirectory,
       };
 }
@@ -191,7 +191,7 @@ class CompactionConfig {
   // 0 disables compaction; deterministic compression always stays on.
   double triggerRatio;
 
-  Map<String, Object?> toMap() => {'trigger_ratio': triggerRatio};
+  Map<String, Object?> toDict() => {'trigger_ratio': triggerRatio};
 }
 
 class Config {
@@ -241,7 +241,7 @@ class Config {
     'persistence',
   };
 
-  factory Config.fromMap(Map<String, Object?> data) {
+  factory Config.fromDict(Map<String, Object?> data) {
     final cfg = Config();
     for (final entry in data.entries) {
       final key = entry.key;
@@ -335,16 +335,16 @@ class Config {
     }
   }
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'mode': mode,
         'result_schema': resultSchema,
-        'compaction': compaction.toMap(),
-        'projection': projection.toMap(),
-        'discovery': discovery.toMap(),
-        'compression': compression.toMap(),
-        'budget': budget.toMap(),
-        'artifacts': artifacts.toMap(),
-        'limits': limits.toMap(),
-        'persistence': persistence.toMap(),
+        'compaction': compaction.toDict(),
+        'projection': projection.toDict(),
+        'discovery': discovery.toDict(),
+        'compression': compression.toDict(),
+        'budget': budget.toDict(),
+        'artifacts': artifacts.toDict(),
+        'limits': limits.toDict(),
+        'persistence': persistence.toDict(),
       };
 }

@@ -144,7 +144,7 @@ void main() {
     final session = Session(llm,
         kernel: 'You are a stock agent.',
         registry: registry,
-        config: Config.fromMap({'mode': 'job'}),
+        config: Config.fromDict({'mode': 'job'}),
         policy: PolicyEngine(defaultDecision: 'allow'),
         seed: {
           'goal': 'report tokyo stock',

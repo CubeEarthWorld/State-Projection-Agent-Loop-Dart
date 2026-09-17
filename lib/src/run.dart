@@ -82,7 +82,6 @@ class ApprovalRequest {
     required this.policyRevision,
     this.expiresAt,
     this.resolution, // "approved" | "denied" | "expired" | null (pending)
-    this.resolvedAt,
   });
 
   final String id;
@@ -92,7 +91,6 @@ class ApprovalRequest {
   final int policyRevision;
   double? expiresAt;
   String? resolution;
-  double? resolvedAt;
 
   bool isExpired({double? now}) {
     final t = now ?? DateTime.now().millisecondsSinceEpoch / 1000.0;
@@ -127,7 +125,7 @@ class PendingQuestion {
   final List<String>? choices;
   String? answer;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'id': id,
         'command_id': commandId,
         'call_id': callId,
@@ -136,7 +134,7 @@ class PendingQuestion {
         'answer': answer,
       };
 
-  factory PendingQuestion.fromMap(Map<String, Object?> m) => PendingQuestion(
+  factory PendingQuestion.fromDict(Map<String, Object?> m) => PendingQuestion(
         id: m['id'] as String,
         commandId: m['command_id'] as String,
         callId: m['call_id'] as String,
@@ -280,7 +278,6 @@ class Run {
       throw ArgumentError("decision must be 'approved' or 'denied'");
     }
     request.resolution = decision;
-    request.resolvedAt = _nowSeconds();
     ledger.append(id, 'approval_resolved', {'approval_id': request.id, 'resolution': decision});
     pendingApproval = null;
     lastResolvedApproval = request;
@@ -360,7 +357,7 @@ class Run {
                 'policy_revision': pendingApproval!.policyRevision,
                 'expires_at': pendingApproval!.expiresAt,
               },
-        'pending_question': pendingQuestion?.toMap(),
+        'pending_question': pendingQuestion?.toDict(),
         'pending_calls': [
           for (final c in pendingCalls)
             {'id': c.id, 'name': c.name, 'arguments': c.arguments, 'raw_arguments': c.rawArguments},
@@ -410,7 +407,7 @@ class Run {
       );
     }
     final pq = (state['pending_question'] as Map?)?.cast<String, Object?>();
-    if (pq != null) run.pendingQuestion = PendingQuestion.fromMap(pq);
+    if (pq != null) run.pendingQuestion = PendingQuestion.fromDict(pq);
     run.pendingCalls = [
       for (final c in (state['pending_calls'] as List? ?? []))
         ToolCall(

@@ -41,13 +41,11 @@ import 'run.dart';
 import 'serialization.dart';
 import 'tokens.dart';
 
-export 'json_schema.dart' show validateArgs, applyDefaults;
 
 // ---------------------------------------------------------------------------
 // Results
 // ---------------------------------------------------------------------------
 
-const List<String> outcomes = ['ok', 'failed', 'unknown', 'denied', 'waiting_approval', 'waiting_user'];
 
 /// Outcomes whose result arrives later (approval, answer): nothing is
 /// recorded for the call until then, so the decision stays out of the
@@ -62,7 +60,7 @@ class ToolResult {
     this.error,
     this.observation = '',
     this.artifactId,
-    this.outcome = 'ok', // one of `outcomes`
+    this.outcome = 'ok', // ok | failed | unknown | denied | waiting_approval | waiting_user
     this.commandId,
   });
 
@@ -508,15 +506,8 @@ class Runtime {
     return (capability, args);
   }
 
-  static bool isReadOnly(Capability capability) {
-    // Mirrors PolicyEngine.evaluate: undeclared effects are treated as the
-    // most restrictive kind, so an author who forgot to declare effects
-    // doesn't also get free parallel execution.
-    final effects = capability.effects.isNotEmpty
-        ? capability.effects
-        : [Effect(kind: 'external', resource: 'undeclared:*')];
-    return effects.every((e) => e.kind == 'none' || e.kind == 'read');
-  }
+  static bool isReadOnly(Capability capability) =>
+      capability.plannedEffects.every((e) => e.kind == 'none' || e.kind == 'read');
 
   // -- execution ------------------------------------------------------------
 

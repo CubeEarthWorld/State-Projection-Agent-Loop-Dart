@@ -16,7 +16,7 @@
 ///
 /// Unlike the Python original, this port has no runtime signature/docstring
 /// introspection (no `inspect`/`typing` equivalent in Dart): capabilities
-/// are always built via [Capability.fromMap] with an explicit handler and an
+/// are always built via [Capability.fromDict] with an explicit handler and an
 /// explicit `wantsCtx` flag, rather than derived from a decorated function.
 library;
 
@@ -277,13 +277,17 @@ class Capability {
   /// Provider-safe function name for native tool-calling schemas.
   String get apiName => toApiName(name);
 
-  /// Undeclared effects are NOT treated as pure — see `PolicyEngine.evaluate`
-  /// and `Runtime._isReadOnly` for the same conservative default.
+  /// The effects the policy engine and the runtime reason about. A
+  /// capability that declares none is NOT assumed safe — that would reward an
+  /// author who forgot to declare effects with maximum trust and free
+  /// parallel execution — so it counts as the most restrictive kind.
+  List<Effect> get plannedEffects =>
+      effects.isNotEmpty ? effects : [Effect(kind: 'external', resource: 'undeclared:*')];
 
   /// Build a [Capability] from a plain-map definition (the only
   /// construction path in this port — see the library note about dropped
   /// function introspection).
-  factory Capability.fromMap(
+  factory Capability.fromDict(
     Map<String, Object?> data, {
     Function? handler,
     bool wantsCtx = false,

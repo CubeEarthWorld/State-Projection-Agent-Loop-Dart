@@ -48,7 +48,7 @@ String jsonTypeName(Object? value) {
 
 /// Minimal JSON Schema subset validator (the only validator in this port —
 /// mirrors Python's `_mini_validate` fallback, used unconditionally).
-String? miniValidate(Map<String, Object?> schema, Object? value, [String path = '']) {
+String? validateValue(Map<String, Object?> schema, Object? value, [String path = '']) {
   final where = path.isEmpty ? 'arguments' : path;
   final t = schema['type'];
   if (t != null) {
@@ -93,7 +93,7 @@ String? miniValidate(Map<String, Object?> schema, Object? value, [String path = 
     final props = (schema['properties'] as Map?)?.cast<String, Object?>() ?? {};
     for (final entry in props.entries) {
       if (valueMap.containsKey(entry.key) && entry.value is Map) {
-        final err = miniValidate(
+        final err = validateValue(
           (entry.value as Map).cast<String, Object?>(),
           valueMap[entry.key],
           '$where.${entry.key}',
@@ -111,7 +111,7 @@ String? miniValidate(Map<String, Object?> schema, Object? value, [String path = 
   if (value is List && schema['items'] is Map) {
     final itemSchema = (schema['items'] as Map).cast<String, Object?>();
     for (var i = 0; i < value.length; i++) {
-      final err = miniValidate(itemSchema, value[i], '$where[$i]');
+      final err = validateValue(itemSchema, value[i], '$where[$i]');
       if (err != null) return err;
     }
   }
@@ -119,7 +119,7 @@ String? miniValidate(Map<String, Object?> schema, Object? value, [String path = 
     final errs = <String>[];
     var matched = false;
     for (final sub in (schema['anyOf'] as List)) {
-      final err = miniValidate((sub as Map).cast<String, Object?>(), value, where);
+      final err = validateValue((sub as Map).cast<String, Object?>(), value, where);
       if (err == null) {
         matched = true;
         break;
@@ -153,5 +153,5 @@ String? validateArgs(Map<String, Object?> schema, Object? args) {
   if (args is! Map) {
     return 'arguments must be a JSON object, got ${jsonTypeName(args)}';
   }
-  return miniValidate(schema, args.cast<String, Object?>());
+  return validateValue(schema, args.cast<String, Object?>());
 }

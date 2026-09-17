@@ -119,7 +119,7 @@ class Registry {
       return capability;
     }
     if (capability is Map) {
-      return Capability.fromMap(capability.cast<String, Object?>(),
+      return Capability.fromDict(capability.cast<String, Object?>(),
           handler: handler, wantsCtx: wantsCtx);
     }
     throw ArgumentError('Cannot register $capability as a capability');

@@ -161,7 +161,7 @@ Future<void> main() async {
   // 2. Job mode: bundled checklist pack + finish(result).
   stdout.writeln('[2] job mode: checklist pack then finish');
   {
-    final cfg = Config.fromMap({'mode': 'job', 'budget': {'max_steps': 8}});
+    final cfg = Config.fromDict({'mode': 'job', 'budget': {'max_steps': 8}});
     final s = Session(llm, config: cfg, policy: PolicyEngine(defaultDecision: 'allow'),
         kernel: 'You manage plans. Use planning.checklist.manage to create the checklist exactly as asked, '
             'then call finish(result) with the string "done".');
@@ -198,7 +198,7 @@ Future<void> main() async {
         'effects': [{'kind': 'none'}],
       }, handler: (args) => 'noop');
     }
-    final cfg = Config.fromMap({'discovery': {'k': 0}});
+    final cfg = Config.fromDict({'discovery': {'k': 0}});
     final s = Session(llm, registry: reg, config: cfg, policy: PolicyEngine(defaultDecision: 'allow'),
         kernel: 'Answer with tools. If the tool you need is not listed, search for it first.');
     final answer = await s.send('What is the weather in Osaka right now?');

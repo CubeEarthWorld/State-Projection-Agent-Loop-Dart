@@ -137,20 +137,16 @@ class Rule {
   }
 }
 
-typedef PerEffectEntry = (Effect, String, String); // (effect, decision, layer)
-
 class PolicyDecision {
   PolicyDecision({
     required this.decision,
     required this.reason,
     this.layer = '',
-    List<PerEffectEntry>? perEffect,
-  }) : perEffect = perEffect ?? <PerEffectEntry>[];
+  });
 
   final String decision;
   final String reason;
   final String layer;
-  final List<PerEffectEntry> perEffect;
 }
 
 typedef PolicyChangeListener = void Function(String description);
@@ -334,21 +330,12 @@ class PolicyEngine {
   }
 
   PolicyDecision evaluate(Capability capability, Map<String, Object?> arguments) {
-    // A capability that declares no effects at all is NOT assumed safe —
-    // that would reward an author who simply forgot to declare effects with
-    // maximum trust. Treat undeclared effects as the most restrictive kind
-    // so the default posture stays conservative.
-    final effects = capability.effects.isNotEmpty
-        ? capability.effects
-        : [Effect(kind: 'external', resource: 'undeclared:*')];
-    final perEffect = <PerEffectEntry>[];
     var worstDecision = 'allow';
     var worstLayer = 'default';
     var worstReason = 'no effects';
     var worstSeverity = 0;
-    for (final effect in effects) {
+    for (final effect in capability.plannedEffects) {
       final (decision, layer, reason) = _evaluateEffect(capability, effect, arguments);
-      perEffect.add((effect, decision, layer));
       final severity = _severity[decision]!;
       if (severity > worstSeverity) {
         worstDecision = decision;
@@ -357,8 +344,7 @@ class PolicyEngine {
         worstSeverity = severity;
       }
     }
-    return PolicyDecision(
-        decision: worstDecision, reason: worstReason, layer: worstLayer, perEffect: perEffect);
+    return PolicyDecision(decision: worstDecision, reason: worstReason, layer: worstLayer);
   }
 }
 

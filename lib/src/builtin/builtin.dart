@@ -39,13 +39,19 @@ void installBuiltins(Registry registry, Iterable<String> packs) {
     if (handlers == null) {
       throw ArgumentError('Unknown builtin pack "$pack"; expected one of ${_packs.keys.toList()}');
     }
-    final defs = load(pack);
-    for (final def in defs is List ? defs : [defs]) {
-      final map = (def as Map).cast<String, Object?>();
-      final name = map['name'] as String;
-      if (!registry.contains(name)) {
-        registry.register(map, handler: handlers[name], wantsCtx: true, replace: true);
-      }
+    install(registry, load(pack) as List, handlers, wantsCtx: true);
+  }
+}
+
+/// Register each definition with its handler, unless the registry already
+/// resolves that name.
+void install(Registry registry, List<Object?> definitions, Map<String, Function> handlers,
+    {bool wantsCtx = false}) {
+  for (final def in definitions) {
+    final map = (def as Map).cast<String, Object?>();
+    final name = map['name'] as String;
+    if (!registry.contains(name)) {
+      registry.register(map, handler: handlers[name], wantsCtx: wantsCtx, replace: true);
     }
   }
 }

@@ -21,7 +21,7 @@ import 'discovery.dart';
 import 'embeddings.dart';
 import 'events.dart';
 import 'ids.dart';
-import 'json_schema.dart' show miniValidate;
+import 'json_schema.dart' show validateValue;
 import 'llm.dart';
 import 'messages.dart';
 import 'policy.dart';
@@ -276,7 +276,7 @@ class Session {
     final newSession = Session(
       llm,
       kernel: _kernelText,
-      config: Config.fromMap(deepCopy(config.toMap())),
+      config: Config.fromDict(deepCopy(config.toDict())),
       registry: registry,
       embedder: search.embedder,
       spawnLlmFactory: spawnLlmFactory,
@@ -463,7 +463,7 @@ class Session {
 
       if (decision.finish) {
         final schema = config.resultSchema;
-        final error = schema == null ? null : miniValidate(schema, decision.result);
+        final error = schema == null ? null : validateValue(schema, decision.result);
         if (error != null) {
           ledger.append(run.id, 'decision_validated', {'ok': false, 'reason': 'result_schema: $error'});
           _notice('[runtime] finish(result) rejected: $error. Fix the result and call finish again.');

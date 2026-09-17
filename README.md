@@ -85,7 +85,7 @@ This port has **no Dart equivalent of Python's runtime introspection**
 (`inspect`, `typing.get_type_hints`, `importlib`). Concretely:
 
 - There is no `@capability` decorator / `build_capability_from_function`.
-  Every `Capability` is built explicitly via `Capability.fromMap(definition,
+  Every `Capability` is built explicitly via `Capability.fromDict(definition,
   handler: ..., wantsCtx: true)` — a plain `Map<String, Object?>` definition
   (JSON Schema parameters, effects, retry safety, ...) plus an explicit
   handler function and an explicit `wantsCtx` flag, instead of being derived
@@ -207,7 +207,7 @@ A `WAITING_FOR_APPROVAL` run survives a process restart:
 
 ```dart
 // process 1
-final session = Session(llm, config: Config.fromMap(
+final session = Session(llm, config: Config.fromDict(
     {'mode': 'job', 'persistence': {'ledger_directory': './runs'}}));
 await session.runJob('delete the old backups');
 final runId = session.run.id;   // paused: WAITING_FOR_APPROVAL
@@ -300,7 +300,7 @@ via `Session(sections: ...)` or `session.addSection(...)`.
 
 ```dart
 final session = Session(llm, builtins: ['meta', 'checklist', 'ask'], onEvent: print,
-    config: Config.fromMap({'compaction': {'trigger_ratio': 0.8}}));
+    config: Config.fromDict({'compaction': {'trigger_ratio': 0.8}}));
 session.registry.register(skillCapability('deploy', deploySteps, summary: 'How to deploy'));
 installToolkits(session.registry, Directory('./workspace'));
 

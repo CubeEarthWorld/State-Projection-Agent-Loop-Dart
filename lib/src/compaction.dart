@@ -61,7 +61,7 @@ Map<String, Object?>? parseFoldReply(String text) {
 
 /// Validate and merge a fold delta. Returns an error message, or null.
 String? applyFoldDelta(WorkingState ws, Map<String, Object?> delta) {
-  final error = miniValidate(foldSchema, delta);
+  final error = validateValue(foldSchema, delta);
   if (error != null) return error;
   final resolve = ((delta['questions_resolve'] as List?) ?? []).cast<String>();
   for (final q in resolve) {

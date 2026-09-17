@@ -1,7 +1,7 @@
 /// Shared test helpers: quick capability-definition builders.
 ///
 /// Port of `tests/_util.py`. Keys inside the returned map stay snake_case
-/// (they feed `Capability.fromMap`, which parses them the same way Python's
+/// (they feed `Capability.fromDict`, which parses them the same way Python's
 /// `Capability.from_dict` does); only Dart-side identifiers are camelCase.
 library;
 

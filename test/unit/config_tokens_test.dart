@@ -30,8 +30,8 @@ void main() {
       expect(cfg.persistence.ledgerDirectory, isNull);
     });
 
-    test('fromMap nested override', () {
-      final cfg = Config.fromMap({
+    test('fromDict nested override', () {
+      final cfg = Config.fromDict({
         'mode': 'job',
         'projection': {'window_tokens': 8000},
         'discovery': {'vector': 'off', 'k': 4},
@@ -45,14 +45,14 @@ void main() {
       expect(cfg.budget.maxSteps, equals(10));
     });
 
-    test('fromMap unknown key raises', () {
+    test('fromDict unknown key raises', () {
       expect(
-        () => Config.fromMap({'projektion': {}}),
+        () => Config.fromDict({'projektion': {}}),
         throwsA(isA<ArgumentError>().having(
             (e) => e.toString(), 'message', contains('Unknown config key'))),
       );
       expect(
-        () => Config.fromMap({
+        () => Config.fromDict({
           'discovery': {'vektor': 'on'},
         }),
         throwsA(isA<ArgumentError>().having(

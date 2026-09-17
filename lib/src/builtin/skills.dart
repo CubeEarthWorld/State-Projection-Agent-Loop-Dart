@@ -14,7 +14,7 @@ import '../capability.dart';
 /// [name] is a lowercase identifier (`[a-z][a-z0-9_]*`); [summary] is the
 /// one line the model sees before deciding to load the skill.
 Capability skillCapability(String name, String text, {required String summary}) {
-  return Capability.fromMap({
+  return Capability.fromDict({
     'name': 'skill.$name.load',
     'category': 'skill',
     'card': {'summary': summary, 'tags': ['skill', name]},

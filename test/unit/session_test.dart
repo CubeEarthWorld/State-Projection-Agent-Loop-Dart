@@ -115,7 +115,7 @@ void main() {
         CallbackStep(step2),
         const TextStep('done'),
       ]);
-      final cfg = Config.fromMap({
+      final cfg = Config.fromDict({
         'discovery': {'query_sources': <String>[]},
       }); // kill layer 2
       final session = Session(llm, registry: reg, config: cfg, policy: allowAllPolicy());
@@ -127,7 +127,7 @@ void main() {
   });
 
   group('JobMode', () {
-    Config jobConfig({int maxSteps = 50}) => Config.fromMap({
+    Config jobConfig({int maxSteps = 50}) => Config.fromDict({
           'mode': 'job',
           'budget': {'max_steps': maxSteps},
         });
@@ -196,7 +196,7 @@ void main() {
     });
 
     test('idle limit returns text', () async {
-      final cfg = Config.fromMap({
+      final cfg = Config.fromDict({
         'mode': 'job',
         'limits': {'max_idle_turns': 1},
       });
@@ -291,7 +291,7 @@ void main() {
 
   group('FidelityCompression', () {
     test('old messages are compressed in projection', () async {
-      final cfg = Config.fromMap({
+      final cfg = Config.fromDict({
         'projection': {'window_tokens': 2000},
       });
       final llm = ScriptedLLM([
@@ -416,7 +416,7 @@ void main() {
         capabilityDict('demo.big', properties: {}, maxInlineTokens: 1),
         handler: (Map<String, Object?> args) => 'x' * 4000,
       );
-      final config = Config.fromMap({
+      final config = Config.fromDict({
         'mode': 'job',
         'persistence': {'ledger_directory': dir.path},
         'artifacts': {'directory': '${dir.path}/artifacts'},
@@ -458,7 +458,7 @@ void main() {
       addTearDown(() => dir.deleteSync(recursive: true));
       List<String> names() => [for (final f in dir.listSync()) f.uri.pathSegments.last]..sort();
 
-      final config = Config.fromMap({
+      final config = Config.fromDict({
         'persistence': {'ledger_directory': dir.path},
       });
       final first = Session(ScriptedLLM([const TextStep('hello')]),

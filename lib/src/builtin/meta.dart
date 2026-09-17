@@ -101,7 +101,7 @@ Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
             if (cap.name != 'meta.agent.spawn') cap.name,
         ]);
 
-  final childConfig = Config.fromMap(deepCopy(parent.config.toMap()));
+  final childConfig = Config.fromDict(deepCopy(parent.config.toDict()));
   childConfig.mode = 'job';
   childConfig.budget.maxSteps = maxSteps;
   childConfig.persistence.ledgerDirectory = null; // child ledger is not persisted independently

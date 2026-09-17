@@ -29,7 +29,7 @@ void main() {
         DecisionStep(decision),
         DecisionStep(Decision(text: 'ok', usage: Usage())),
       ]);
-      final config = Config.fromMap({'budget': {'cost_per_1k_input': 1, 'cost_per_1k_output': 2}});
+      final config = Config.fromDict({'budget': {'cost_per_1k_input': 1, 'cost_per_1k_output': 2}});
       final session = Session(llm, config: config);
       await session.send('go');
       if (kind == 'usage') {

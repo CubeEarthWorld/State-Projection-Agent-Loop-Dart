@@ -57,7 +57,7 @@ void main() {
       ]);
       final session = Session(llm,
           registry: reg,
-          config: Config.fromMap({'mode': 'job'}),
+          config: Config.fromDict({'mode': 'job'}),
           policy: PolicyEngine(defaultDecision: 'allow'));
       await session.runJob('write then read');
       expect(log, equals(['write:x', 'read']), reason: 'write must complete before read starts');
@@ -86,7 +86,7 @@ void main() {
       ]);
       final session = Session(llm,
           registry: reg,
-          config: Config.fromMap({'mode': 'job'}),
+          config: Config.fromDict({'mode': 'job'}),
           policy: PolicyEngine(defaultDecision: 'allow'));
       final result = await session.runJob('try to sneak a delete in with finish');
 
@@ -118,7 +118,7 @@ void main() {
       ]);
       final session = Session(llm,
           registry: reg,
-          config: Config.fromMap({'mode': 'job'}),
+          config: Config.fromDict({'mode': 'job'}),
           policy: PolicyEngine(defaultDecision: 'allow'));
       await session.runJob('charge the card');
 
@@ -210,7 +210,7 @@ void main() {
         return 'ok';
       }
 
-      final cfg = Config.fromMap({
+      final cfg = Config.fromDict({
         'projection': {'window_tokens': 2000, 'reserved_output_tokens': 200},
       });
       final session = Session(ScriptedLLM([CallbackStep(snapshot)]), registry: reg, config: cfg);
@@ -260,7 +260,7 @@ void main() {
       // was recorded at approval-request time.
       PolicyEngine makePolicy() => PolicyEngine(defaultDecision: 'require_approval');
 
-      final cfg = Config.fromMap({
+      final cfg = Config.fromDict({
         'mode': 'job',
         'persistence': {'ledger_directory': tmpDir.path},
       });
@@ -332,7 +332,7 @@ void main() {
         ]),
         handler: (Map<String, Object?> args) => 'echo:${args['text']}',
       );
-      final cfg = Config.fromMap({
+      final cfg = Config.fromDict({
         'mode': 'job',
         'persistence': {'ledger_directory': tmpDir.path},
       });
