@@ -12,7 +12,6 @@ import 'dart:async';
 import '../artifacts.dart' show isRef, refKey;
 import '../capability.dart';
 import '../config.dart';
-import '../registry.dart';
 import '../serialization.dart';
 import '../session.dart';
 
@@ -93,18 +92,14 @@ Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
     ((parent.checklists.execute('export', {'id': id}) as Map)['checklists'] as List).single];
   final llm = parent.spawnLlmFactory != null ? parent.spawnLlmFactory!(model) : parent.llm;
 
-  Registry childRegistry;
-  if (toolScope != null && toolScope.isNotEmpty) {
-    childRegistry = parent.registry.subset(toolScope);
-  } else {
-    childRegistry = Registry();
-    for (final cap in parent.registry.capabilities) {
-      if (cap.name != 'meta.agent.spawn') {
-        // no recursive swarm by default
-        childRegistry.register(cap, replace: true);
-      }
-    }
-  }
+  // No scope means everything but spawn itself (no recursive swarm by
+  // default). Always a subset(), so the parent's deny-list carries over.
+  final childRegistry = parent.registry.subset(toolScope != null && toolScope.isNotEmpty
+      ? toolScope
+      : [
+          for (final cap in parent.registry.capabilities)
+            if (cap.name != 'meta.agent.spawn') cap.name,
+        ]);
 
   final childConfig = Config.fromMap(deepCopy(parent.config.toMap()));
   childConfig.mode = 'job';

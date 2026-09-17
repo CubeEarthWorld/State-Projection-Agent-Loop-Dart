@@ -428,6 +428,25 @@ void main() {
         'retained');
   });
 
+  test("a spawned child keeps the parent's deny-list", () async {
+    final seen = <List<Object?>>[];
+    final session = Session(
+      ScriptedLLM([]),
+      registry: Registry(disabled: ['planning.checklist.manage']),
+      builtins: ['meta', 'checklist', 'spawn'],
+      policy: PolicyEngine(defaultDecision: 'allow'),
+      spawnLlmFactory: (model) => ScriptedLLM([
+        CallbackStep((messages, tools) {
+          seen.add([for (final t in tools ?? const []) ((t as Map)['function'] as Map)['name']]);
+          return ScriptedLLM.finish('done');
+        }),
+      ]),
+    );
+    expect(await session.invoke('meta.agent.spawn', {'task': 'work'}), 'done');
+    expect(seen.single, contains('meta__tool__find'));
+    expect(seen.single, isNot(contains('planning__checklist__manage')));
+  });
+
   test('branch, rewind and spawn do not share plans', () async {
     String? id;
     final session = Session(
