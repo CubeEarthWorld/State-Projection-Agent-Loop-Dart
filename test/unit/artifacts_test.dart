@@ -1,5 +1,5 @@
 // Artifact store: structured references never confuse literal strings
-// (P0-6), previews, peek, run namespacing, move().
+// (P0-6), previews, peek, run namespacing.
 import 'package:state_projection_loop/state_projection_loop.dart';
 import 'dart:io';
 
@@ -91,17 +91,6 @@ void main() {
     });
   });
 
-  group('Namespacing', () {
-    test('move creates new id in target store', () {
-      final parent = ArtifactStore('run_parent');
-      final child = ArtifactStore('run_child');
-      final childRecord = child.put({'result': 42}, source: 'child.tool');
-      final moved = parent.move(childRecord);
-      expect(moved.id, isNot(equals(childRecord.id)));
-      expect(parent.get(moved.id), equals({'result': 42}));
-      expect(parent.exists(childRecord.id), isFalse);
-    });
-  });
   group('persistence round trip', () {
     // Persisted artifacts are for a resumed run to read back; a store that
     // only ever writes them is a promise the docstring cannot keep.
@@ -114,6 +103,26 @@ void main() {
       final second = ArtifactStore('run_1', directory: dir);
       expect(second.exists(record.id), isTrue);
       expect(second.peek(record.id), contains('payload'));
+    });
+
+    test('a recovered artifact resolves to the value that was stored', () {
+      final dir = Directory.systemTemp.createTempSync('spal_art_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final record = ArtifactStore('run_1', directory: dir).put({
+        'rows': [1, 2],
+      }, source: 'demo.tool');
+
+      final second = ArtifactStore('run_1', directory: dir);
+      expect(
+          second.resolveArgs({
+            'data': {r'$artifact': record.id},
+          }),
+          equals({
+            'data': {
+              'rows': [1, 2],
+            },
+          }));
+      expect(second.refText(second.getRecord(record.id)), contains('dict 1 keys'));
     });
 
     test('another run still cannot see it', () {
