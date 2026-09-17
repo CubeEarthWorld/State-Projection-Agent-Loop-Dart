@@ -60,7 +60,7 @@ void main() {
 
   test('shared wire fixture', () {
     final document =
-        jsonDecode(File('test/fixtures/checklists_v1.json').readAsStringSync())
+        jsonDecode(File('spec/fixtures/checklists_v1.json').readAsStringSync())
             as Map;
     final store = ChecklistStore.fromDict(document);
     expect(store.toDict(), document);

@@ -5,6 +5,11 @@
 /// `Capability.from_dict` does); only Dart-side identifiers are camelCase.
 library;
 
+import 'package:state_projection_loop/state_projection_loop.dart';
+
+/// A policy that lets every call run, for tests that are not about policy.
+PolicyEngine allowAll() => PolicyEngine(defaultDecision: 'allow');
+
 String echoHandlerText(String text) => 'echo: $text';
 
 /// Build a capability definition map. [name] should already be dotted

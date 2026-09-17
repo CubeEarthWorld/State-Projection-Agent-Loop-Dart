@@ -128,9 +128,9 @@ Map<String, Object?> stockDef = {
 };
 
 Future<void> main() async {
-  final apiKey = Platform.environment['DEEPSEEK_API_KEY'] ?? Platform.environment['LLM_API_KEY'];
+  final apiKey = Platform.environment['LLM_API_KEY'] ?? Platform.environment['DEEPSEEK_API_KEY'];
   if (apiKey == null || apiKey.isEmpty) {
-    stderr.writeln('set DEEPSEEK_API_KEY');
+    stderr.writeln('set LLM_API_KEY (or DEEPSEEK_API_KEY)');
     exit(2);
   }
   final llm = OpenAICompatAdapter(

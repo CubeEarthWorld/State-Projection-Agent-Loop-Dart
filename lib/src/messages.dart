@@ -9,7 +9,7 @@ import 'ids.dart';
 
 
 /// Role constants. Tool results MUST use [observation] so untrusted data
-/// stays structurally distinct from instructions (invariant I6; mitigation,
+/// stays structurally distinct from instructions (a mitigation,
 /// not a full defense).
 const String kSystem = 'system';
 const String kUser = 'user';

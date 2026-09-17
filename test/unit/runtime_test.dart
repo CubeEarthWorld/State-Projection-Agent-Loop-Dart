@@ -1,5 +1,5 @@
-// Runtime: validation & self-repair, require_spec gate, ordering (P0-1),
-// retry-safety-gated retries and OUTCOME_UNKNOWN (P0-2), output policy,
+// Runtime: validation & self-repair, require_spec gate, ordering,
+// retry-safety-gated retries and OUTCOME_UNKNOWN, output policy,
 // budget arithmetic.
 import 'dart:async';
 
@@ -124,7 +124,7 @@ void main() {
   });
 
   group('Ordering', () {
-    // P0-1: calls execute in the model's stated order; only a contiguous
+    // Calls execute in the model's stated order; only a contiguous
     // run of read-only capabilities may run concurrently.
     test('write then read preserves order', () async {
       final reg = Registry();
@@ -204,7 +204,7 @@ void main() {
   });
 
   group('RetrySafety', () {
-    // P0-2: retries are only permitted for pure/idempotent capabilities;
+    // Retries are only permitted for pure/idempotent capabilities;
     // a timeout is OUTCOME_UNKNOWN, never silently "failed".
     test('timeout is outcome unknown not failed', () async {
       final reg = Registry();

@@ -7,7 +7,6 @@ import 'package:test/test.dart';
 
 import '../util.dart';
 
-PolicyEngine allowAll() => PolicyEngine(defaultDecision: 'allow');
 
 List<(String, String)> observations(Session s) => [
       for (final e in s.ledger.iterRun(s.run.id))

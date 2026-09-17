@@ -1,4 +1,4 @@
-// Config defaults (spec §13) and token estimation.
+// Config defaults and token estimation.
 import 'package:state_projection_loop/state_projection_loop.dart';
 import 'package:test/test.dart';
 

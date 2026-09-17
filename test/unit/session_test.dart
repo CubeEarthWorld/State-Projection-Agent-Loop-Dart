@@ -1,5 +1,5 @@
 // Session loop: chat & job modes, candidates injection, meta capabilities,
-// finish validation (P0-3), concurrency guard (P0-4), policy gating, budget
+// finish validation, concurrency guard, policy gating, budget
 // grace, interruption, compaction wiring.
 //
 // SKIPPED: Python's TestAsyncGuard.test_sync_api_inside_event_loop_raises
@@ -29,8 +29,6 @@ Registry echoRegistry() {
   return reg;
 }
 
-PolicyEngine allowAllPolicy() => PolicyEngine(defaultDecision: 'allow');
-
 void main() {
   group('ChatMode', () {
     test('default config plain chat', () async {
@@ -54,7 +52,7 @@ void main() {
         DecisionStep(ScriptedLLM.call('demo.echo', arguments: {'text': 'hello'})),
         const TextStep('The tool said: echo: hello'),
       ]);
-      final session = Session(llm, registry: echoRegistry(), policy: allowAllPolicy());
+      final session = Session(llm, registry: echoRegistry(), policy: allowAll());
       final reply = await session.send('please echo hello');
       expect(reply, equals('The tool said: echo: hello'));
       final obs = session.conversation.where((m) => m.role == 'tool').toList();
@@ -87,7 +85,7 @@ void main() {
       Object check(List<Message> messages, List<Map<String, Object?>>? tools) {
         final joined = messages.map((m) => m.content.toString()).join('\n');
         // Native schemas are sent, so the candidate card dedupes down to
-        // just the signature (P0-5) instead of repeating the full card.
+        // just the signature instead of repeating the full card.
         expect(joined, contains('[Tool candidates'));
         expect(joined, contains('demo.echo('));
         final toolNames = (tools ?? []).map((t) => (t['function'] as Map)['name']).toList();
@@ -118,7 +116,7 @@ void main() {
       final cfg = Config.fromDict({
         'discovery': {'query_sources': <String>[]},
       }); // kill layer 2
-      final session = Session(llm, registry: reg, config: cfg, policy: allowAllPolicy());
+      final session = Session(llm, registry: reg, config: cfg, policy: allowAll());
       expect(await session.send('noise'), equals('done'));
       final findObs =
           session.conversation.firstWhere((m) => m.role == 'tool' && m.name == 'meta.tool.find');
@@ -138,7 +136,7 @@ void main() {
         DecisionStep(ScriptedLLM.finish({'status': 'ok', 'count': 3})),
       ]);
       final session =
-          Session(llm, registry: echoRegistry(), config: jobConfig(), policy: allowAllPolicy());
+          Session(llm, registry: echoRegistry(), config: jobConfig(), policy: allowAll());
       final result = await session.runJob('do the thing');
       expect(result, equals({'status': 'ok', 'count': 3}));
       expect(session.run.state, equals('COMPLETED'));
@@ -156,13 +154,16 @@ void main() {
         DecisionStep(ScriptedLLM.finish('actually done')),
       ]);
       final session =
-          Session(llm, registry: echoRegistry(), config: jobConfig(), policy: allowAllPolicy());
+          Session(llm, registry: echoRegistry(), config: jobConfig(), policy: allowAll());
       final result = await session.runJob('do the thing');
       expect(result, equals('actually done'));
       final rejected = session.conversation
           .where((m) => m.role == 'tool' && m.content.toString().contains('Rejected'))
           .toList();
       expect(rejected, isNotEmpty); // the mixed decision produced a rejection observation, not an execution
+      expect(session.ledger.iterRun(session.run.id).any((e) => e.type == 'command_started'), isFalse,
+          reason: 'nothing in a decision that also finishes may run');
+      expect(session.run.state, equals('COMPLETED'));
     });
 
     test('text only turn gets nudged', () async {
@@ -185,7 +186,7 @@ void main() {
         const TextStep('final wrap-up summary'),
       ]);
       final session = Session(llm,
-          registry: echoRegistry(), config: jobConfig(maxSteps: 2), policy: allowAllPolicy());
+          registry: echoRegistry(), config: jobConfig(maxSteps: 2), policy: allowAll());
       final result = await session.runJob('loop forever');
       expect(result, equals('final wrap-up summary'));
       expect(
@@ -279,13 +280,15 @@ void main() {
         DecisionStep(ScriptedLLM.call('demo.slow')),
         const TextStep('finished'),
       ]);
-      final session = Session(llm, registry: reg, policy: allowAllPolicy());
+      final session = Session(llm, registry: reg, policy: allowAll());
 
       final task = session.send('go');
       await started.future;
       await expectLater(session.send('again'), throwsA(isA<ConcurrencyError>()));
       release.complete();
       expect(await task, equals('finished'));
+      // the rejected input never reached the conversation
+      expect(session.conversation.where((m) => m.role == 'user').length, equals(1));
     });
   });
 
@@ -344,7 +347,7 @@ void main() {
         ScriptedLLM(steps ?? [const TextStep('hi')]),
         kernel: 'K',
         registry: registry,
-        policy: allowAllPolicy(),
+        policy: allowAll(),
       );
     }
 
@@ -422,7 +425,7 @@ void main() {
         'artifacts': {'directory': '${dir.path}/artifacts'},
       });
       final first = Session(ScriptedLLM([DecisionStep(ScriptedLLM.finish('ok'))]),
-          registry: registry, config: config, policy: allowAllPolicy());
+          registry: registry, config: config, policy: allowAll());
       await first.runJob('nothing');
 
       final resumed = Session.resumeFromLedger(
@@ -433,7 +436,7 @@ void main() {
         first.run.id,
         config: config,
         registry: registry,
-        policy: allowAllPolicy(),
+        policy: allowAll(),
       );
       resumed.run.state = 'RUNNING';
       await resumed.runJob('make a big result');
@@ -639,7 +642,7 @@ void main() {
           const TextStep('reply 1'),
         ]),
         registry: registry,
-        policy: allowAllPolicy(),
+        policy: allowAll(),
       );
       await session.send('send the email');
       await session.send('do something else');
@@ -660,7 +663,7 @@ void main() {
           const TextStep('after rewind'),
         ]),
         registry: registry,
-        policy: allowAllPolicy(),
+        policy: allowAll(),
       );
       await session.send('set goal');
       await session.send('change goal');
@@ -706,7 +709,7 @@ void main() {
           const TextStep('done'),
         ]),
         registry: registry,
-        policy: allowAllPolicy(),
+        policy: allowAll(),
       );
       await session.send('call it');
       await session.send('call it again');
@@ -719,5 +722,51 @@ void main() {
       expect(observations.any((o) => o.contains('giving up')), isFalse,
           reason: 'the counter should have been reset by the rewind');
     });
+  });
+
+  group('history and usage', () {
+    test('long reply survives ledger and next projection', () async {
+      final reply = '${'x' * 2100}IMPORTANT_END';
+      final llm = ScriptedLLM([TextStep(reply), const TextStep('ok')]);
+      final session = Session(llm);
+      expect(await session.send('one'), reply);
+      expect(session.conversation.last.content, reply);
+      await session.send('continue');
+      expect((llm.requests[1]['messages'] as List<Message>).any((m) => m.content == reply), isTrue);
+    });
+
+    for (final kind in ['arguments', 'raw', 'finish', 'usage']) {
+      test('usage counts complete request and output: $kind', () async {
+        final payload = 'x' * 8000;
+        final decision = kind == 'finish'
+            ? ScriptedLLM.finish({'text': payload})
+            : Decision(
+                calls: [ToolCall(
+                  name: 'missing_tool',
+                  arguments: kind == 'raw' ? {} : {'text': payload},
+                  rawArguments: kind == 'raw' ? '{"text":"$payload' : null,
+                )],
+                usage: kind == 'usage' ? Usage(promptTokens: 11, completionTokens: 7) : null,
+              );
+        final llm = ScriptedLLM([
+          DecisionStep(decision),
+          DecisionStep(Decision(text: 'ok', usage: Usage())),
+        ]);
+        final config = Config.fromDict({'budget': {'cost_per_1k_input': 1, 'cost_per_1k_output': 2}});
+        final session = Session(llm, config: config);
+        await session.send('go');
+        if (kind == 'usage') {
+          expect(session.budget.promptTokens, 11);
+          expect(session.budget.completionTokens, 7);
+        } else {
+          final request = llm.requests[0];
+          expect(session.budget.promptTokens,
+              estimateTokens(request['messages']) + estimateTokens(request['tools']));
+          expect(session.budget.completionTokens, greaterThanOrEqualTo(estimateTokens(payload)));
+        }
+        expect(session.budget.cost, closeTo(
+            session.budget.promptTokens / 1000 + session.budget.completionTokens / 1000 * 2, 1e-9));
+      });
+    }
   });
 }

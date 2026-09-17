@@ -1,5 +1,5 @@
 // Artifact store: structured references never confuse literal strings
-// (P0-6), previews, peek, run namespacing.
+//, previews, peek, run namespacing.
 import 'package:state_projection_loop/state_projection_loop.dart';
 import 'dart:io';
 

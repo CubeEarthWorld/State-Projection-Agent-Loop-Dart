@@ -228,38 +228,22 @@ class Config {
   final PersistenceConfig persistence;
   final CompactionConfig compaction;
 
-  static const Set<String> _topLevelKeys = {
-    'mode',
-    'result_schema',
-    'compaction',
-    'projection',
-    'discovery',
-    'compression',
-    'budget',
-    'artifacts',
-    'limits',
-    'persistence',
-  };
-
   factory Config.fromDict(Map<String, Object?> data) {
     final cfg = Config();
     for (final entry in data.entries) {
       final key = entry.key;
       final value = entry.value;
-      if (!_topLevelKeys.contains(key)) {
-        throw ArgumentError('Unknown config key: "$key"');
-      }
       switch (key) {
         case 'mode':
           cfg.mode = value as String;
         case 'result_schema':
           cfg.resultSchema = (value as Map?)?.cast<String, Object?>();
         case 'compaction':
-          _applySub(cfg.compaction, value, key, {
+          _applySub(value, key, {
             'trigger_ratio': (v) => cfg.compaction.triggerRatio = (v as num).toDouble(),
           });
         case 'projection':
-          _applySub(cfg.projection, value, key, {
+          _applySub(value, key, {
             'sections': (v) => cfg.projection.sections = (v as List).cast<String>(),
             'window_tokens': (v) => cfg.projection.windowTokens = (v as num).toInt(),
             'reserved_output_tokens': (v) =>
@@ -270,7 +254,7 @@ class Config {
                 cfg.projection.dedupeCandidateCardsAgainstSchemas = v as bool,
           });
         case 'discovery':
-          _applySub(cfg.discovery, value, key, {
+          _applySub(value, key, {
             'vector': (v) => cfg.discovery.vector = v as String,
             'k': (v) => cfg.discovery.k = (v as num).toInt(),
             'toc': (v) => cfg.discovery.toc = v as bool,
@@ -279,7 +263,7 @@ class Config {
                 cfg.discovery.querySources = (v as List).cast<String>(),
           });
         case 'compression':
-          _applySub(cfg.compression, value, key, {
+          _applySub(value, key, {
             'full_window': (v) => cfg.compression.fullWindow = (v as num).toInt(),
             'compressed_window': (v) => cfg.compression.compressedWindow = (v as num).toInt(),
             'summary_window': (v) => cfg.compression.summaryWindow = (v as num).toInt(),
@@ -287,7 +271,7 @@ class Config {
             'observation_max_lines': (v) => cfg.compression.observationMaxLines = (v as num).toInt(),
           });
         case 'budget':
-          _applySub(cfg.budget, value, key, {
+          _applySub(value, key, {
             'max_steps': (v) => cfg.budget.maxSteps = (v as num?)?.toInt(),
             'max_tokens': (v) => cfg.budget.maxTokens = (v as num?)?.toInt(),
             'max_cost': (v) => cfg.budget.maxCost = (v as num?)?.toDouble(),
@@ -296,14 +280,14 @@ class Config {
             'cost_per_1k_output': (v) => cfg.budget.costPer1kOutput = (v as num).toDouble(),
           });
         case 'artifacts':
-          _applySub(cfg.artifacts, value, key, {
+          _applySub(value, key, {
             'inline_threshold_tokens': (v) =>
                 cfg.artifacts.inlineThresholdTokens = (v as num).toInt(),
             'preview_tokens': (v) => cfg.artifacts.previewTokens = (v as num).toInt(),
             'directory': (v) => cfg.artifacts.directory = v as String?,
           });
         case 'limits':
-          _applySub(cfg.limits, value, key, {
+          _applySub(value, key, {
             'max_validation_retries': (v) =>
                 cfg.limits.maxValidationRetries = (v as num).toInt(),
             'max_idle_turns': (v) => cfg.limits.maxIdleTurns = (v as num).toInt(),
@@ -313,15 +297,17 @@ class Config {
             'repeat_window': (v) => cfg.limits.repeatWindow = (v as num).toInt(),
           });
         case 'persistence':
-          _applySub(cfg.persistence, value, key, {
+          _applySub(value, key, {
             'ledger_directory': (v) => cfg.persistence.ledgerDirectory = v as String?,
           });
+        default:
+          throw ArgumentError('Unknown config key: "$key"');
       }
     }
     return cfg;
   }
 
-  static void _applySub(Object current, Object? value, String key,
+  static void _applySub(Object? value, String key,
       Map<String, void Function(Object?)> setters) {
     if (value is! Map) {
       throw ArgumentError('Config key "$key" expects a map');
