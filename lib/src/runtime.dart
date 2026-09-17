@@ -55,7 +55,6 @@ const Set<String> waitingOutcomes = {'waiting_approval', 'waiting_user'};
 class ToolResult {
   ToolResult({
     required this.call,
-    required this.ok,
     this.value,
     this.error,
     this.observation = '',
@@ -65,13 +64,14 @@ class ToolResult {
   });
 
   final ToolCall call;
-  final bool ok;
   final Object? value;
   final String? error;
   final String observation;
   final String? artifactId;
   final String outcome;
   final String? commandId;
+
+  bool get ok => outcome == 'ok';
 }
 
 /// Result of one call to [Runtime.execute].
@@ -133,10 +133,11 @@ class BudgetState {
     cost += prompt / 1000 * b.costPer1kInput + completion / 1000 * b.costPer1kOutput;
   }
 
-  /// Account one model turn: the adapter's reported usage when it has one,
-  /// otherwise an estimate from what was sent and what came back.
+  /// Account one model turn: a step, and the adapter's reported usage when it
+  /// has one, otherwise an estimate from what was sent and what came back.
   void noteDecision(
       Decision decision, List<Message> messages, List<Map<String, Object?>> apiTools, Config cfg) {
+    steps += 1;
     if (decision.usage != null) {
       noteUsage(decision.usage!.promptTokens, decision.usage!.completionTokens, cfg);
       return;
@@ -231,7 +232,6 @@ class Runtime {
     if (why == null) return null;
     return ToolResult(
       call: call,
-      ok: false,
       outcome: 'failed',
       error: 'loop_guard',
       observation: 'Loop guard: "${capability.name}" with these exact arguments $why. '
@@ -275,15 +275,9 @@ class Runtime {
 
     Future<void> flush() async {
       if (buffer.isEmpty) return;
-      if (buffer.length == 1) {
-        final (call, cap, args) = buffer[0];
-        results.add(await _run(cap, args, ctx, run, call));
-      } else {
-        final batch = await Future.wait([
-          for (final (call, cap, args) in buffer) _run(cap, args, ctx, run, call),
-        ]);
-        results.addAll(batch);
-      }
+      results.addAll(await Future.wait([
+        for (final (call, cap, args) in buffer) _run(cap, args, ctx, run, call),
+      ]));
       buffer.clear();
     }
 
@@ -307,7 +301,6 @@ class Runtime {
         await flush();
         results.add(ToolResult(
           call: call,
-          ok: false,
           outcome: 'denied',
           error: decision.reason,
           observation: 'Denied by policy (${decision.layer}): ${decision.reason}',
@@ -328,7 +321,6 @@ class Runtime {
         );
         results.add(ToolResult(
           call: call,
-          ok: false,
           outcome: 'waiting_approval',
           error: 'approval_required',
           observation: 'Approval required: ${decision.reason}',
@@ -384,7 +376,6 @@ class Runtime {
         results: [
           ToolResult(
             call: firstCall,
-            ok: false,
             outcome: 'denied',
             error: 'approval_denied',
             observation: 'Approval denied: $deniedName was not executed.',
@@ -393,7 +384,6 @@ class Runtime {
           for (final call in rest)
             ToolResult(
               call: call,
-              ok: false,
               outcome: 'denied',
               error: 'approval_denied',
               observation: 'Not executed: the approval for $deniedName was denied.',
@@ -413,7 +403,6 @@ class Runtime {
     if (capability == null) {
       results.add(ToolResult(
         call: firstCall,
-        ok: false,
         outcome: 'failed',
         error: 'unknown_capability',
         observation: 'Error: capability "${firstCall.name}" no longer registered.',
@@ -443,7 +432,6 @@ class Runtime {
           : '';
       return ToolResult(
         call: call,
-        ok: false,
         outcome: 'failed',
         error: 'unknown_capability',
         observation: 'Error: capability "${call.name}" is not registered. '
@@ -458,7 +446,6 @@ class Runtime {
       seenSpecs.add(capability.name);
       return ToolResult(
         call: call,
-        ok: false,
         outcome: 'failed',
         error: 'require_spec',
         observation: 'Capability "${call.name}" requires its full spec to be reviewed before '
@@ -495,7 +482,6 @@ class Runtime {
       }
       return ToolResult(
         call: call,
-        ok: false,
         outcome: 'failed',
         error: 'validation: $error',
         observation: observation,
@@ -527,7 +513,6 @@ class Runtime {
       run.recordOutcome(command, 'failed', error: 'no_handler');
       return ToolResult(
         call: call,
-        ok: false,
         outcome: 'failed',
         error: 'no_handler',
         commandId: command.id,
@@ -550,7 +535,6 @@ class Runtime {
           run.askQuestion(command, call.id, value);
           return ToolResult(
             call: call,
-            ok: false,
             outcome: 'waiting_user',
             error: 'question_pending',
             observation: 'Question pending: ${value.text}',
@@ -561,7 +545,6 @@ class Runtime {
         run.recordOutcome(command, 'ok', resultRef: artifactId);
         return ToolResult(
           call: call,
-          ok: true,
           value: value,
           outcome: 'ok',
           commandId: command.id,
@@ -588,7 +571,6 @@ class Runtime {
     final isUnknown = lastOutcome == 'unknown';
     return ToolResult(
       call: call,
-      ok: false,
       error: lastError,
       outcome: lastOutcome,
       commandId: command.id,

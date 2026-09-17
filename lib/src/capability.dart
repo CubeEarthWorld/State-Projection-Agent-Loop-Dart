@@ -59,6 +59,11 @@ class Effect {
 
   final String kind;
   final String resource;
+
+  Map<String, Object?> toDict() => {'kind': kind, 'resource': resource};
+
+  factory Effect.fromDict(Map<String, Object?> d) =>
+      Effect(kind: (d['kind'] as String?) ?? 'none', resource: (d['resource'] as String?) ?? '*');
 }
 
 class CapabilityCard {
@@ -67,7 +72,7 @@ class CapabilityCard {
 
   String summary;
 
-  /// Derived by [Capability.deriveCard]; never authored.
+  /// Derived from the name and parameters; never authored.
   String signature = '';
   final List<String> tags;
 }
@@ -260,6 +265,7 @@ class Capability {
         execution = execution ?? CapabilityExecution(),
         effects = effects ?? <Effect>[] {
     validateCapabilityName(name);
+    _deriveCard();
   }
 
   final String name;
@@ -358,12 +364,11 @@ class Capability {
       execution: execution,
       effects: effects,
     );
-    cap.deriveCard();
     cap.wantsCtx = wantsCtx;
     return cap;
   }
 
-  void deriveCard() {
+  void _deriveCard() {
     if (card.summary.isEmpty) {
       final s = _firstSentence(spec.description);
       card.summary = s.isEmpty ? name : s;
@@ -376,8 +381,7 @@ class Capability {
 
   /// ~30-token one-liner: enough to call the capability directly.
   String cardText() {
-    final sig = card.signature.isEmpty ? name : card.signature;
-    return '- $sig — ${card.summary}';
+    return '- ${card.signature} — ${card.summary}';
   }
 
   String specText() {

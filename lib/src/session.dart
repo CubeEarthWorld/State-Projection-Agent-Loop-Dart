@@ -49,11 +49,7 @@ EventLedger _makeLedger(Config config) {
   return InMemoryLedger();
 }
 
-class _Continue {
-  const _Continue();
-}
-
-const _continue = _Continue();
+const _continue = Object(); // sentinel: the loop should keep going
 
 typedef SpawnLlmFactory = LLMAdapter Function(String? model);
 
@@ -174,28 +170,8 @@ class Session {
 
   /// Derived view of renderable ledger events as Messages. Read-only;
   /// the ledger is the source of truth, this is a convenience accessor.
-  List<Message> get conversation {
-    final msgs = <Message>[];
-    for (final event in ledger.iterRun(run.id)) {
-      final msgDict = eventToMessage(event);
-      if (msgDict == null) continue;
-      msgs.add(Message(
-        role: msgDict['role'] as String,
-        content: msgDict['content'] ?? '',
-        toolCallId: msgDict['tool_call_id'] as String?,
-        name: msgDict['name'] as String?,
-        toolCalls: [
-          for (final tc in (msgDict['tool_calls'] as List? ?? []))
-            ToolCall(
-              name: (tc as Map)['name']?.toString() ?? '',
-              arguments: (tc['arguments'] as Map?)?.cast<String, Object?>() ?? {},
-              id: tc['id']?.toString() ?? '',
-            ),
-        ],
-      ));
-    }
-    return msgs;
-  }
+  List<Message> get conversation =>
+      [for (final (_, message) in renderable(ledger, run.id)) message];
 
   Future<Object?> send(String text) async {
     return _guarded(() async {
@@ -205,13 +181,9 @@ class Session {
     });
   }
 
-  Future<Object?> runJob(String task) async {
-    return _guarded(() async {
-      ledger.append(run.id, 'user_input', {'text': task});
-      _checkpoint();
-      return await _loop();
-    });
-  }
+  /// A job is started the way a chat turn is; `config.mode` is what makes it
+  /// run until finish(result).
+  Future<Object?> runJob(String task) => send(task);
 
   void interrupt() {
     _interrupted = true;
@@ -283,12 +255,9 @@ class Session {
       policy: policy,
     );
     newSession.workingState = WorkingState.fromDict(deepCopy(workingState.toDict()));
-    final renderable = ledger
-        .iterRun(run.id)
-        .where((e) => renderableTypes.contains(e.type))
-        .toList();
-    final cut = atMessage ?? renderable.length;
-    for (final event in renderable.take(cut)) {
+    final events = [for (final (event, _) in renderable(ledger, run.id)) event];
+    final cut = atMessage ?? events.length;
+    for (final event in events.take(cut)) {
       newSession.ledger.append(newSession.run.id, event.type, Map.of(event.data));
     }
     newSession.ledger.append(newSession.run.id, 'branch_created', {
@@ -407,7 +376,7 @@ class Session {
         _interrupted = false;
         ledger.append(run.id, 'run_state_changed',
             {'from': run.state, 'to': run.state, 'reason': 'interrupted'});
-        final text = _lastAssistantText();
+        final text = _lastText(kAssistant);
         return text.isNotEmpty ? text : '[interrupted]';
       }
 
@@ -440,11 +409,10 @@ class Session {
             rawArguments: call.rawArguments,
           ),
       ];
-      budget.steps += 1;
       ledger.append(run.id, 'model_response', {
         'text': decision.text,
         'finish': decision.finish,
-        'calls': [for (final c in resolvedCalls) {'name': c.name, 'arguments': c.arguments, 'id': c.id}],
+        'calls': [for (final c in resolvedCalls) c.toDict()],
       });
 
       if (decision.finish && resolvedCalls.isNotEmpty) {
@@ -516,23 +484,19 @@ class Session {
     if (ratio <= 0) return false;
     final used = estimateTokens(messages) + projection.schemaTokens(ctx.apiTools);
     if (used <= ratio * config.projection.windowTokens) return false;
-    final events = ledger.iterRun(run.id).where((e) => renderableTypes.contains(e.type)).toList();
+    final history = renderable(ledger, run.id);
     final keep = config.compression.fullWindow;
     final foldable = [
-      for (final e in events.take(events.length > keep ? events.length - keep : 0))
-        if (e.sequence > workingState.foldedSequence) e,
+      for (final (e, m) in history.take(history.length > keep ? history.length - keep : 0))
+        if (e.sequence > workingState.foldedSequence) (e, m),
     ];
     if (foldable.isEmpty) return false;
-    final transcript = [
-      for (final e in foldable)
-        if (eventToMessage(e) case final m?) '${m['role']}: ${m['content']}',
-    ].join('\n');
+    final transcript = [for (final (_, m) in foldable) '${m.role}: ${m.content}'].join('\n');
     final prompt = [
       Message(role: kSystem, content: foldInstructions),
       Message(role: kUser, content: transcript),
     ];
     final decision = await llm.complete(prompt);
-    budget.steps += 1;
     budget.noteDecision(decision, prompt, const [], config);
     final delta = parseFoldReply(decision.text);
     final before = workingState.toDict();
@@ -541,7 +505,7 @@ class Session {
       _notice('[runtime] compaction skipped: $error');
       return false;
     }
-    workingState.foldedSequence = foldable.last.sequence;
+    workingState.foldedSequence = foldable.last.$1.sequence;
     ledger.append(run.id, 'state_folded', {
       'through_sequence': workingState.foldedSequence,
       'before': before,
@@ -581,9 +545,9 @@ class Session {
       if (!['COMPLETED', 'FAILED', 'CANCELLED'].contains(run.state)) {
         run.fail('budget_stop: $reason');
       }
-      return (true, run.result ?? _lastAssistantText());
+      return (true, run.result ?? _lastText(kAssistant));
     }
-    final text = _lastAssistantText();
+    final text = _lastText(kAssistant);
     return (true, text.isNotEmpty ? text : '[budget exhausted]');
   }
 
@@ -621,23 +585,14 @@ class Session {
   }
 
   String _lastText(String role) {
-    final events = ledger
-        .iterRun(run.id)
-        .where((e) => renderableTypes.contains(e.type))
-        .toList();
-    for (final event in events.reversed) {
-      final msgDict = eventToMessage(event);
-      if (msgDict != null && msgDict['role'] == role) {
-        // A part list is not a search query; keep looking further back
-        // rather than stringifying it.
-        final content = msgDict['content'];
-        if (content is String && content.isNotEmpty) return content;
-      }
+    for (final (_, message) in renderable(ledger, run.id).reversed) {
+      // A part list is not a search query; keep looking further back rather
+      // than stringifying it.
+      final content = message.content;
+      if (message.role == role && content is String && content.isNotEmpty) return content;
     }
     return '';
   }
-
-  String _lastAssistantText() => _lastText(kAssistant);
 
   List<Map<String, Object?>> _apiTools(TurnContext ctx) {
     final names = <String>{};

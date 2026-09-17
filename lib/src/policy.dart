@@ -211,70 +211,10 @@ class PolicyEngine {
   }
 
   void applyPreset(String preset, {String layer = 'workspace'}) {
-    if (!presets.contains(preset)) {
-      throw ArgumentError('Unknown preset "$preset"; expected one of $presets');
-    }
+    final rules = _presetRules(preset);
     clearLayer(layer);
-    if (preset == 'auto_safe' || preset == 'auto_workspace_dev') {
-      // Writes confined to the session's own working state never leave the
-      // process, so they are auto-allowed; they are declared as writes so
-      // the runtime keeps them in the model's stated order.
-      addRule(layer, Rule(decision: 'allow', capabilityPattern: 'planning.checklist.manage',
-          effectKind: 'write', resourcePattern: 'working_state:checklists', reason: 'preset:local_checklists'));
-      addRule(layer, Rule(decision: 'allow', capabilityPattern: 'meta.user.ask',
-          effectKind: 'external', resourcePattern: 'user:*', reason: 'preset:ask_user'));
-      addRule(layer, Rule(decision: 'allow', capabilityPattern: 'state.*',
-          effectKind: 'write', resourcePattern: 'working_state:*', reason: 'preset:local_working_state'));
-    }
-    switch (preset) {
-      case 'deny_all':
-        addRule(layer, Rule(decision: 'deny', reason: 'preset:deny_all'));
-      case 'approve_all_effects':
-        addRule(
-            layer,
-            Rule(
-                decision: 'allow',
-                effectKind: 'none',
-                reason: 'preset:approve_all_effects'));
-        addRule(
-            layer,
-            Rule(decision: 'require_approval', reason: 'preset:approve_all_effects'));
-      case 'auto_safe':
-        addRule(layer,
-            Rule(decision: 'allow', effectKind: 'none', reason: 'preset:auto_safe'));
-        addRule(
-          layer,
-          Rule(
-              decision: 'allow',
-              effectKind: 'read',
-              resourcePattern: 'workspace:*',
-              reason: 'preset:auto_safe'),
-        );
-        addRule(layer, Rule(decision: 'require_approval', reason: 'preset:auto_safe'));
-      case 'auto_workspace_dev':
-        addRule(
-            layer,
-            Rule(
-                decision: 'allow',
-                effectKind: 'none',
-                reason: 'preset:auto_workspace_dev'));
-        addRule(
-          layer,
-          Rule(
-              decision: 'allow',
-              resourcePattern: 'workspace:*',
-              reason: 'preset:auto_workspace_dev'),
-        );
-        addRule(
-          layer,
-          Rule(
-              decision: 'allow',
-              resourcePattern: 'sandbox:*',
-              reason: 'preset:auto_workspace_dev'),
-        );
-        addRule(
-            layer,
-            Rule(decision: 'require_approval', reason: 'preset:auto_workspace_dev'));
+    for (final rule in rules) {
+      addRule(layer, rule);
     }
   }
 
@@ -348,3 +288,40 @@ class PolicyEngine {
   }
 }
 
+/// The rules a preset installs, in order.
+List<Rule> _presetRules(String preset) {
+  Rule rule(String decision, {String? effectKind, String resourcePattern = '*'}) => Rule(
+      decision: decision,
+      effectKind: effectKind,
+      resourcePattern: resourcePattern,
+      reason: 'preset:$preset');
+  // Writes confined to the session's own working state never leave the
+  // process, so the auto presets allow them; they are declared as writes so
+  // the runtime keeps them in the model's stated order.
+  final localState = [
+    Rule(decision: 'allow', capabilityPattern: 'planning.checklist.manage',
+        effectKind: 'write', resourcePattern: 'working_state:checklists', reason: 'preset:local_checklists'),
+    Rule(decision: 'allow', capabilityPattern: 'meta.user.ask',
+        effectKind: 'external', resourcePattern: 'user:*', reason: 'preset:ask_user'),
+    Rule(decision: 'allow', capabilityPattern: 'state.*',
+        effectKind: 'write', resourcePattern: 'working_state:*', reason: 'preset:local_working_state'),
+  ];
+  return switch (preset) {
+    'deny_all' => [rule('deny')],
+    'approve_all_effects' => [rule('allow', effectKind: 'none'), rule('require_approval')],
+    'auto_safe' => [
+        ...localState,
+        rule('allow', effectKind: 'none'),
+        rule('allow', effectKind: 'read', resourcePattern: 'workspace:*'),
+        rule('require_approval'),
+      ],
+    'auto_workspace_dev' => [
+        ...localState,
+        rule('allow', effectKind: 'none'),
+        rule('allow', resourcePattern: 'workspace:*'),
+        rule('allow', resourcePattern: 'sandbox:*'),
+        rule('require_approval'),
+      ],
+    _ => throw ArgumentError('Unknown preset "$preset"; expected one of $presets'),
+  };
+}

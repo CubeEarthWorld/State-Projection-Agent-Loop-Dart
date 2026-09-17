@@ -18,6 +18,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'ids.dart';
+import 'messages.dart';
 import 'serialization.dart';
 
 const List<String> eventTypes = [
@@ -112,10 +113,12 @@ abstract interface class EventLedger {
 
 double _nowSeconds() => DateTime.now().millisecondsSinceEpoch / 1000.0;
 
-void _checkType(String type) {
+Event _newEvent(String runId, int sequence, String type, Map<String, Object?> data) {
   if (!eventTypes.contains(type)) {
     throw ArgumentError('Unknown event type "$type"; expected one of $eventTypes');
   }
+  return Event(
+      id: newId('event'), runId: runId, sequence: sequence, type: type, ts: _nowSeconds(), data: data);
 }
 
 /// Process-local ledger: fast, exercised by every unit test, but does not
@@ -126,17 +129,8 @@ class InMemoryLedger implements EventLedger {
 
   @override
   Event append(String runId, String type, Map<String, Object?> data) {
-    _checkType(type);
     final list = _events.putIfAbsent(runId, () => []);
-    final seq = list.length + 1;
-    final event = Event(
-      id: newId('event'),
-      runId: runId,
-      sequence: seq,
-      type: type,
-      ts: _nowSeconds(),
-      data: data,
-    );
+    final event = _newEvent(runId, list.length + 1, type, data);
     list.add(event);
     return event;
   }
@@ -197,19 +191,10 @@ class JsonlLedger implements EventLedger {
 
   @override
   Event append(String runId, String type, Map<String, Object?> data) {
-    _checkType(type);
-    final seq = _seq(runId) + 1;
-    final event = Event(
-      id: newId('event'),
-      runId: runId,
-      sequence: seq,
-      type: type,
-      ts: _nowSeconds(),
-      data: data,
-    );
+    final event = _newEvent(runId, _seq(runId) + 1, type, data);
     _path(runId).writeAsStringSync('${event.toLine()}\n',
         mode: FileMode.append, encoding: utf8);
-    _lastSeq[runId] = seq;
+    _lastSeq[runId] = event.sequence;
     return event;
   }
 
@@ -256,35 +241,36 @@ class JsonlLedger implements EventLedger {
   }
 }
 
-/// Convert a renderable event into a message dict for projection.
-/// Returns null for non-renderable event types.
-Map<String, Object?>? eventToMessage(Event event) {
+/// The message a renderable event projects to; null for any other type.
+Message? eventToMessage(Event event) {
+  final data = event.data;
   switch (event.type) {
     case 'user_input':
-      return {'role': 'user', 'content': event.data['text'] ?? ''};
+      return Message(role: kUser, content: data['text'] ?? '');
     case 'model_response':
-      final calls = <Map<String, Object?>>[
-        for (final c in (event.data['calls'] as List? ?? []))
-          {
-            'name': (c as Map)['name'] ?? '',
-            'arguments': c['arguments'] ?? {},
-            'id': c['id'] ?? '',
-          },
-      ];
-      return {'role': 'assistant', 'content': event.data['text'] ?? '', 'tool_calls': calls};
+      return Message(role: kAssistant, content: data['text'] ?? '', toolCalls: [
+        for (final c in (data['calls'] as List? ?? []))
+          ToolCall.fromDict((c as Map).cast<String, Object?>()),
+      ]);
     case 'observation':
-      return {
-        'role': 'tool',
-        'content': event.data['text'] ?? '',
-        'tool_call_id': event.data['call_id'],
-        'name': event.data['name'],
-      };
+      return Message(
+          role: kObservation,
+          content: data['text'] ?? '',
+          toolCallId: data['call_id'] as String?,
+          name: data['name'] as String?);
     case 'notice':
-      return {'role': 'system', 'content': event.data['text'] ?? ''};
+      return Message(role: kSystem, content: data['text'] ?? '');
     default:
       return null;
   }
 }
+
+/// The run's conversation, oldest first: each renderable event with the
+/// message it projects to. The one scan every reader of the history shares.
+List<(Event, Message)> renderable(EventLedger ledger, String runId) => [
+      for (final e in ledger.iterRun(runId))
+        if (eventToMessage(e) case final m?) (e, m),
+    ];
 
 /// A ledger that also hands every appended [Event] to an observer.
 ///
