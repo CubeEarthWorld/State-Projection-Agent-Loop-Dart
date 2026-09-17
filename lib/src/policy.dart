@@ -225,6 +225,8 @@ class PolicyEngine {
       // the runtime keeps them in the model's stated order.
       addRule(layer, Rule(decision: 'allow', capabilityPattern: 'planning.checklist.manage',
           effectKind: 'write', resourcePattern: 'working_state:checklists', reason: 'preset:local_checklists'));
+      addRule(layer, Rule(decision: 'allow', capabilityPattern: 'meta.user.ask',
+          effectKind: 'external', resourcePattern: 'user:*', reason: 'preset:ask_user'));
       addRule(layer, Rule(decision: 'allow', capabilityPattern: 'state.*',
           effectKind: 'write', resourcePattern: 'working_state:*', reason: 'preset:local_working_state'));
     }

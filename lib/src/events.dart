@@ -25,23 +25,22 @@ const List<String> eventTypes = [
   'projection_compiled',
   'model_response',
   'decision_validated',
-  'policy_decision',
   'command_started',
   'command_completed',
   'command_failed',
   'command_outcome_unknown',
-  'artifact_stored',
   'approval_requested',
   'approval_resolved',
   'run_state_changed',
-  'state_folded',
-  'policy_changed',
   'branch_created',
   'notice',
   'observation',
   'checkpoint',
   'rewound',
   'checklists_changed',
+  'question_asked',
+  'question_answered',
+  'state_folded',
 ];
 
 const List<String> renderableTypes = ['user_input', 'model_response', 'observation', 'notice'];
@@ -285,4 +284,39 @@ Map<String, Object?>? eventToMessage(Event event) {
     default:
       return null;
   }
+}
+
+/// A ledger that also hands every appended [Event] to an observer.
+///
+/// Observers are read-only by contract: they see what happened, they cannot
+/// veto or rewrite it (that is the policy engine's job). An observer that
+/// throws is ignored so it can never take the loop down with it.
+class ObservedLedger implements EventLedger {
+  ObservedLedger(this.inner, this.onEvent);
+
+  final EventLedger inner;
+  final void Function(Event event) onEvent;
+
+  @override
+  Event append(String runId, String type, Map<String, Object?> data) {
+    final event = inner.append(runId, type, data);
+    try {
+      onEvent(event);
+    } catch (_) {
+      // observers never break the loop
+    }
+    return event;
+  }
+
+  @override
+  Iterable<Event> iterRun(String runId, {int after = 0}) => inner.iterRun(runId, after: after);
+
+  @override
+  int lastSequence(String runId) => inner.lastSequence(runId);
+
+  @override
+  void saveSnapshot(Snapshot snapshot) => inner.saveSnapshot(snapshot);
+
+  @override
+  Snapshot? loadSnapshot(String runId) => inner.loadSnapshot(runId);
 }

@@ -37,8 +37,8 @@ bool scopeMatches(String entry, String name, String category) {
 /// Every capability in the system, and the single gate the model sees it
 /// through.
 ///
-/// Both [all_] and [get] skip disabled capabilities, and every other surface
-/// — the TOC, pinned specs, native tool schemas, layer-2 candidates,
+/// Both [capabilities] and [get] skip disabled capabilities, and every other
+/// surface — the TOC, pinned specs, native tool schemas, layer-2 candidates,
 /// `meta.tool.find`, and execution — derives from those two. Disabling
 /// therefore removes a capability from all of them at once.
 class Registry {
@@ -49,8 +49,8 @@ class Registry {
   final Map<String, String> _latest = {}; // name -> qualifiedName of highest version
   int _epoch = 0;
   // A deny-list of names/categories, not of registered objects: a disabled
-  // name stays disabled however it is registered afterwards, so bundled
-  // tools that self-install (ensureMetaTools) cannot sneak back in.
+  // name stays disabled however it is registered afterwards, so a bundled
+  // pack installed later (installBuiltins) cannot sneak it back in.
   final Set<String> _disabled;
   (int, List<Capability>) _pinnedCache = (-1, const []);
   final List<ToolProvider> _providers = [];
@@ -77,9 +77,6 @@ class Registry {
     _epoch += 1;
     return cap;
   }
-
-  List<Capability> registerMany(Iterable<Object> capabilities) =>
-      [for (final c in capabilities) register(c)];
 
   /// Remove by bare name (all versions) or exact `name@version`.
   void unregister(String name) {
@@ -191,10 +188,11 @@ class Registry {
     }
   }
 
+  static String _categoryOf(Capability c) => c.category.isEmpty ? 'misc' : c.category;
+
   bool _isDisabled(Capability capability) {
     if (_disabled.isEmpty) return false;
-    final category = capability.category.isEmpty ? 'misc' : capability.category;
-    return _disabled.any((e) => scopeMatches(e, capability.name, category));
+    return _disabled.any((e) => scopeMatches(e, capability.name, _categoryOf(capability)));
   }
 
   // -- lookup ---------------------------------------------------------------
@@ -231,37 +229,29 @@ class Registry {
 
   bool contains(String name) => get(name) != null;
 
-  int get length => all_.length;
+  int get length => capabilities.length;
 
-  Iterable<Capability> get all_ =>
+  /// Latest version of every reachable capability, in registration order.
+  Iterable<Capability> get capabilities =>
       _latest.values.map((q) => _capabilities[q]!).where((c) => !_isDisabled(c));
 
-  List<Capability> all() => all_.toList();
+  List<Capability> all() => capabilities.toList();
 
   /// Cached by epoch: this is read several times per turn (native schemas,
   /// the kernel section, the layer-2 exclusion set).
   List<Capability> pinned() {
     if (_pinnedCache.$1 != _epoch) {
-      _pinnedCache = (_epoch, all_.where((c) => c.discovery.pinned).toList());
+      _pinnedCache = (_epoch, capabilities.where((c) => c.discovery.pinned).toList());
     }
     return _pinnedCache.$2;
   }
 
-  Map<String, int> categories() {
-    final counts = <String, int>{};
-    for (final c in all_) {
-      final cat = c.category.isEmpty ? 'misc' : c.category;
-      counts[cat] = (counts[cat] ?? 0) + 1;
-    }
-    final sortedKeys = counts.keys.toList()..sort();
-    return {for (final k in sortedKeys) k: counts[k]!};
-  }
-
-  Map<String, (int, int)> categoriesWithPinned() {
+  /// Sorted category -> (total, pinned) counts.
+  Map<String, (int, int)> categories() {
     final totals = <String, int>{};
     final pinnedCounts = <String, int>{};
-    for (final c in all_) {
-      final cat = c.category.isEmpty ? 'misc' : c.category;
+    for (final c in capabilities) {
+      final cat = _categoryOf(c);
       totals[cat] = (totals[cat] ?? 0) + 1;
       if (c.discovery.pinned) {
         pinnedCounts[cat] = (pinnedCounts[cat] ?? 0) + 1;
@@ -281,7 +271,7 @@ class Registry {
   /// Above [maxCategories] the index collapses to top-level categories only
   /// (hierarchise when the TOC itself grows too large).
   String tocText({int maxCategories = 60}) {
-    var catInfo = categoriesWithPinned();
+    var catInfo = categories();
     if (catInfo.length > maxCategories) {
       final topTotals = <String, int>{};
       final topPinned = <String, int>{};
@@ -322,9 +312,8 @@ class Registry {
   Registry subset(Iterable<String> scope) {
     final scopeList = scope.toList();
     final sub = Registry(disabled: _disabled);
-    for (final c in all_) {
-      final cat = c.category.isEmpty ? 'misc' : c.category;
-      if (scopeList.any((entry) => scopeMatches(entry, c.name, cat))) {
+    for (final c in capabilities) {
+      if (scopeList.any((entry) => scopeMatches(entry, c.name, _categoryOf(c)))) {
         sub._capabilities[c.qualifiedName] = c;
       }
     }

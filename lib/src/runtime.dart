@@ -30,12 +30,15 @@ import 'dart:async';
 
 import 'artifacts.dart' show ArtifactStore, serializeValue, truncateToTokens;
 import 'capability.dart';
+import 'compression.dart' show contentHash;
 import 'config.dart';
 import 'json_schema.dart';
+import 'llm.dart' show finishName;
 import 'messages.dart';
 import 'policy.dart';
 import 'registry.dart';
 import 'run.dart';
+import 'serialization.dart';
 import 'tokens.dart';
 
 export 'json_schema.dart' show validateArgs, applyDefaults;
@@ -44,7 +47,12 @@ export 'json_schema.dart' show validateArgs, applyDefaults;
 // Results
 // ---------------------------------------------------------------------------
 
-const List<String> outcomes = ['ok', 'failed', 'unknown', 'denied', 'waiting_approval'];
+const List<String> outcomes = ['ok', 'failed', 'unknown', 'denied', 'waiting_approval', 'waiting_user'];
+
+/// Outcomes whose result arrives later (approval, answer): nothing is
+/// recorded for the call until then, so the decision stays out of the
+/// projection as a whole — see `pairToolCalls`.
+const Set<String> waitingOutcomes = {'waiting_approval', 'waiting_user'};
 
 class ToolResult {
   ToolResult({
@@ -54,7 +62,6 @@ class ToolResult {
     this.error,
     this.observation = '',
     this.artifactId,
-    this.elapsedS = 0.0,
     this.outcome = 'ok', // one of `outcomes`
     this.commandId,
   });
@@ -65,7 +72,6 @@ class ToolResult {
   final String? error;
   final String observation;
   final String? artifactId;
-  final double elapsedS;
   final String outcome;
   final String? commandId;
 }
@@ -113,6 +119,25 @@ class BudgetState {
     cost += prompt / 1000 * b.costPer1kInput + completion / 1000 * b.costPer1kOutput;
   }
 
+  /// Account one model turn: the adapter's reported usage when it has one,
+  /// otherwise an estimate from what was sent and what came back.
+  void noteDecision(
+      Decision decision, List<Message> messages, List<Map<String, Object?>> apiTools, Config cfg) {
+    if (decision.usage != null) {
+      noteUsage(decision.usage!.promptTokens, decision.usage!.completionTokens, cfg);
+      return;
+    }
+    var completion = estimateTokens(decision.text);
+    for (final call in decision.calls) {
+      completion += 6 + estimateTokens(call.name) + estimateTokens(call.rawArguments ?? call.arguments);
+    }
+    // Adapters normalize finish(result) out of calls before returning.
+    if (decision.finish) {
+      completion += 6 + estimateTokens(finishName) + estimateTokens({'result': decision.result});
+    }
+    noteUsage(estimateTokens(messages) + estimateTokens(apiTools), completion, cfg);
+  }
+
   String? exceeded(Config cfg) {
     final b = cfg.budget;
     if (b.maxSteps != null && steps >= b.maxSteps!) {
@@ -151,11 +176,72 @@ class Runtime {
   // exempt because their spec is always in the kernel section.
   final Set<String> seenSpecs = {};
   final Map<String, int> _consecutiveValidationFailures = {};
+  // Loop guard memory: (capability, arguments hash, result tag) of the last
+  // `limits.repeatWindow` executed calls in this run.
+  final List<(String, String, String)> _recent = [];
 
-  /// Forget per-capability validation-failure counts. Called on rewind: the
-  /// failures being counted are in the discarded history, so a capability
-  /// must not start the new timeline already one strike from "giving up".
-  void resetValidationFailures() => _consecutiveValidationFailures.clear();
+  /// Forget what this runtime learned from the conversation so far. Called on
+  /// rewind: the specs shown and the failures counted are in the discarded
+  /// history, so a capability must not start the new timeline already one
+  /// strike from "giving up".
+  void reset() {
+    seenSpecs.clear();
+    _consecutiveValidationFailures.clear();
+    _recent.clear();
+  }
+
+  // -- loop guard -----------------------------------------------------------
+
+  static String _argsHash(Map<String, Object?> args) => contentHash(dumps(args));
+
+  /// Refuse a call the model keeps repeating with identical arguments when
+  /// every repeat failed, or (for anything but a pure read) every repeat
+  /// returned the same result. Polling a pure read for a change is legitimate
+  /// and stays allowed.
+  ToolResult? _loopGuard(ToolCall call, Capability capability, Map<String, Object?> args) {
+    final max = config.limits.maxRepeats;
+    if (max <= 0) return null;
+    final argsHash = _argsHash(args);
+    final tags = [for (final r in _recent) if (r.$1 == capability.name && r.$2 == argsHash) r.$3];
+    if (tags.length < max) return null;
+    String? why;
+    if (tags.where((t) => t.startsWith('err:')).length >= max) {
+      why = 'failed identically ${tags.length} times';
+    } else if (!(isReadOnly(capability) && capability.execution.retrySafety == 'pure')) {
+      final counts = <String, int>{};
+      for (final t in tags) {
+        counts[t] = (counts[t] ?? 0) + 1;
+      }
+      if (counts.values.any((n) => n >= max)) why = 'returned the same result ${tags.length} times';
+    }
+    if (why == null) return null;
+    return ToolResult(
+      call: call,
+      ok: false,
+      outcome: 'failed',
+      error: 'loop_guard',
+      observation: 'Loop guard: "${capability.name}" with these exact arguments $why. '
+          'It was not executed again; change the arguments or the approach.',
+    );
+  }
+
+  void _remember(Capability capability, Map<String, Object?> args, ToolResult result) {
+    if (waitingOutcomes.contains(result.outcome)) return;
+    final tag = result.ok
+        ? contentHash(serializeValue(result.value))
+        : 'err:${contentHash((result.error ?? '').replaceAll(RegExp(r'\d'), ''))}';
+    _recent.add((capability.name, _argsHash(args), tag));
+    while (_recent.length > config.limits.repeatWindow) {
+      _recent.removeAt(0);
+    }
+  }
+
+  Future<ToolResult> _run(Capability capability, Map<String, Object?> args, ToolContext ctx,
+      Run run, ToolCall call, {Command? command}) async {
+    final result = await _executeOne(capability, args, ctx, run, call, command: command);
+    _remember(capability, args, result);
+    return result;
+  }
 
   // -- public ---------------------------------------------------------------
 
@@ -177,10 +263,10 @@ class Runtime {
       if (buffer.isEmpty) return;
       if (buffer.length == 1) {
         final (call, cap, args) = buffer[0];
-        results.add(await _executeOne(cap, args, ctx, run, call));
+        results.add(await _run(cap, args, ctx, run, call));
       } else {
         final batch = await Future.wait([
-          for (final (call, cap, args) in buffer) _executeOne(cap, args, ctx, run, call),
+          for (final (call, cap, args) in buffer) _run(cap, args, ctx, run, call),
         ]);
         results.addAll(batch);
       }
@@ -196,6 +282,12 @@ class Runtime {
         continue;
       }
       final (capability, args) = pre as (Capability, Map<String, Object?>);
+      final tripped = _loopGuard(call, capability, args);
+      if (tripped != null) {
+        await flush();
+        results.add(tripped);
+        continue;
+      }
       final decision = policy.evaluate(capability, args);
       if (decision.decision == 'deny') {
         await flush();
@@ -234,7 +326,11 @@ class Runtime {
         buffer.add((call, capability, args));
       } else {
         await flush();
-        results.add(await _executeOne(capability, args, ctx, run, call));
+        results.add(await _run(capability, args, ctx, run, call));
+        if (results.last.outcome == 'waiting_user') {
+          run.pendingCalls = calls.sublist(idx + 1);
+          return ExecuteBatchResult(results: results, halted: true);
+        }
       }
     }
     await flush();
@@ -257,6 +353,7 @@ class Runtime {
     if (pending.isEmpty) return ExecuteBatchResult(results: [], halted: false);
     final firstCall = pending[0];
     final resolved = run.lastResolvedApproval;
+    run.lastResolvedApproval = null; // consumed here; must not leak into a later pause
     final approved = (resolved != null && resolved.resolution == 'approved')
         ? run.commands[resolved.commandId]
         : null;
@@ -303,8 +400,11 @@ class Runtime {
       ));
     } else {
       final args = approved != null ? approved.arguments : firstCall.arguments;
-      results.add(
-          await _executeOne(capability, args, ctx, run, firstCall, command: approved));
+      results.add(await _run(capability, args, ctx, run, firstCall, command: approved));
+      if (results.last.outcome == 'waiting_user') {
+        run.pendingCalls = pending.sublist(1);
+        return ExecuteBatchResult(results: results, halted: true);
+      }
     }
     run.pendingCalls = [];
     final rest = await execute(pending.sublist(1), ctx, run, policy);
@@ -410,7 +510,7 @@ class Runtime {
     Command? command,
   }) async {
     command ??= run.newCommand(capability.qualifiedName, args, capability.execution.retrySafety);
-    final callCtx = ctx.copyWith(commandId: command.id);
+    final callCtx = ctx.forCommand(command.id);
 
     final handler = capability.execution.handler;
     if (handler == null) {
@@ -425,10 +525,9 @@ class Runtime {
       );
     }
     final resolved = capability.execution.resolveHandles
-        ? ((ctx.store! as ArtifactStore).resolveArgs(args) as Map).cast<String, Object?>()
+        ? (ctx.store!.resolveArgs(args) as Map).cast<String, Object?>()
         : args;
     final attempts = capability.execution.retries + 1 < 1 ? 1 : capability.execution.retries + 1;
-    final start = _now();
     var lastError = '';
     var lastOutcome = 'failed';
     for (var attempt = 0; attempt < attempts; attempt++) {
@@ -436,8 +535,19 @@ class Runtime {
       try {
         final value = await _invoke(handler, capability, resolved, callCtx)
             .timeout(Duration(milliseconds: (capability.execution.timeoutS * 1000).round()));
-        final elapsed = _now() - start;
-        final (observation, artifactId) = _observationFor(capability, value, ctx.store! as ArtifactStore);
+        if (value is Question) {
+          // The command stays pending until Session.answer completes it.
+          run.askQuestion(command, call.id, value);
+          return ToolResult(
+            call: call,
+            ok: false,
+            outcome: 'waiting_user',
+            error: 'question_pending',
+            observation: 'Question pending: ${value.text}',
+            commandId: command.id,
+          );
+        }
+        final (observation, artifactId) = _observationFor(capability, value, ctx.store!);
         run.recordOutcome(command, 'ok', resultRef: artifactId);
         return ToolResult(
           call: call,
@@ -447,7 +557,6 @@ class Runtime {
           commandId: command.id,
           observation: observation,
           artifactId: artifactId,
-          elapsedS: elapsed,
         );
       } on TimeoutException {
         // We cannot confirm whether the underlying effect completed after
@@ -465,7 +574,6 @@ class Runtime {
         await Future.delayed(Duration(milliseconds: delayMs));
       }
     }
-    final elapsed = _now() - start;
     run.recordOutcome(command, lastOutcome, error: lastError);
     final isUnknown = lastOutcome == 'unknown';
     return ToolResult(
@@ -473,7 +581,6 @@ class Runtime {
       ok: false,
       error: lastError,
       outcome: lastOutcome,
-      elapsedS: elapsed,
       commandId: command.id,
       observation: '${isUnknown ? 'Timed out' : 'Error'} executing "${capability.name}" '
           '($attempts attempt(s)): $lastError. '

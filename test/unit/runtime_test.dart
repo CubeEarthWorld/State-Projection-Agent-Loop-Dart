@@ -12,7 +12,7 @@ import '../util.dart';
 // barrel (only validateArgs/applyDefaults are), so pull it in directly.
 import 'package:state_projection_loop/src/json_schema.dart' show miniValidate;
 
-(Runtime, TurnContext, ToolContext, Run, PolicyEngine) makeRuntime(
+(Runtime, ToolContext, ToolContext, Run, PolicyEngine) makeRuntime(
   Registry registry, {
   Config? config,
   bool allowAll = true,
@@ -23,12 +23,12 @@ import 'package:state_projection_loop/src/json_schema.dart' show miniValidate;
   final ledger = InMemoryLedger();
   final run = Run('run_test', 'ses_test', ledger);
   final policy = PolicyEngine(defaultDecision: allowAll ? 'allow' : 'require_approval');
-  final turn = TurnContext(config: cfg, registry: registry, ledger: ledger, runId: 'run_test', store: store);
+  final turn = ToolContext(config: cfg, registry: registry, ledger: ledger, run: run, store: store);
   final ctx = ToolContext(registry: registry, store: store, config: cfg, ledger: ledger, run: run);
   return (runtime, turn, ctx, run, policy);
 }
 
-Future<ExecuteBatchResult> runBatch(Runtime runtime, List<ToolCall> calls, TurnContext turn,
+Future<ExecuteBatchResult> runBatch(Runtime runtime, List<ToolCall> calls, ToolContext turn,
         ToolContext ctx, Run run, PolicyEngine policy) =>
     runtime.execute(calls, ctx, run, policy);
 
@@ -87,7 +87,7 @@ void main() {
 
     test('unknown capability mentions the search tool when present', () async {
       final registry = echoRegistry();
-      ensureMetaTools(registry);
+      installBuiltins(registry, ['meta']);
       final (runtime, turn, ctx, run, policy) = makeRuntime(registry);
       final batch =
           await runBatch(runtime, [ToolCall(name: 'nope.nope', arguments: {})], turn, ctx, run, policy);
@@ -298,7 +298,7 @@ void main() {
     test('ctx injection', () async {
       final reg = Registry();
       Object? withCtx(ToolContext ctx, Map<String, Object?> args) {
-        final ws = ctx.workingState as WorkingState;
+        final ws = ctx.workingState;
         return 'state[${args['key']}]=${ws.extra[args['key']]}';
       }
 

@@ -47,6 +47,7 @@ class WorkingState {
     List<String>? artifactRefs,
     Map<String, Object?>? extra,
     ChecklistStore? checklists,
+    this.foldedSequence = 0,
   })  : acceptanceCriteria = acceptanceCriteria ?? <String>[],
         constraints = constraints ?? <String>[],
         confirmedFacts = confirmedFacts ?? <String>[],
@@ -71,6 +72,9 @@ class WorkingState {
   // state.extra.* capabilities), and the session seed.
   final Map<String, Object?> extra;
   ChecklistStore checklists;
+  // Ledger sequence up to which history has been folded into this state by
+  // compaction; those events render at summary fidelity afterwards.
+  int foldedSequence;
 
   bool isEmpty() =>
       goal.isEmpty &&
@@ -94,6 +98,7 @@ class WorkingState {
         'artifact_refs': List<String>.from(artifactRefs),
         'extra': Map<String, Object?>.from(extra),
         'checklists': checklists.toDict(),
+        'folded_sequence': foldedSequence,
       };
 
   factory WorkingState.fromDict(Map<String, Object?> d) => WorkingState(
@@ -110,6 +115,7 @@ class WorkingState {
         artifactRefs: ((d['artifact_refs'] as List?) ?? []).cast<String>(),
         extra: (d['extra'] as Map?)?.cast<String, Object?>() ?? {},
         checklists: d.containsKey('checklists') ? ChecklistStore.fromDict(d['checklists']) : ChecklistStore(),
+        foldedSequence: (d['folded_sequence'] as num?)?.toInt() ?? 0,
       );
 
   String render({int maxTokens = 800}) {
@@ -164,4 +170,5 @@ const Set<String> workingStateFields = {
   'artifact_refs',
   'extra',
   'checklists',
+  'folded_sequence',
 };

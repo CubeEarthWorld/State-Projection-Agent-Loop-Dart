@@ -9,10 +9,8 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:state_projection_loop/src/builtin/checklist.dart';
+import 'package:state_projection_loop/src/builtin/builtin.dart';
 import 'package:state_projection_loop/src/builtin/defs.g.dart' as defs;
-import 'package:state_projection_loop/src/builtin/meta.dart';
-import 'package:state_projection_loop/src/builtin/state.dart';
 import 'package:state_projection_loop/src/capability.dart';
 import 'package:state_projection_loop/src/registry.dart';
 import 'package:state_projection_loop/src/compression.dart';
@@ -106,10 +104,7 @@ void main() {
 
     test('every definition has a handler', () {
       final registry = Registry();
-      ensureMetaTools(registry);
-      ensureChecklistTool(registry);
-      installSpawn(registry);
-      installState(registry);
+      installBuiltins(registry, ['meta', 'checklist', 'spawn', 'state']);
       expect(registry.all(), isNotEmpty);
       for (final capability in registry.all()) {
         expect(capability.execution.handler, isNotNull,

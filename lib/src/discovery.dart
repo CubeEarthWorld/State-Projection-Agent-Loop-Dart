@@ -114,7 +114,7 @@ class ToolSearch {
   void _ensureIndex() {
     if (_epoch == registry.epoch) return;
     _docTokens = {
-      for (final t in registry.all_) t.name: tokenize(_docText(t)),
+      for (final t in registry.capabilities) t.name: tokenize(_docText(t)),
     };
     _df = {};
     for (final toks in _docTokens.values) {
@@ -129,7 +129,7 @@ class ToolSearch {
     final emb = embedder;
     if (emb != null) {
       final toEmbed =
-          registry.all_.where((t) => !t.discovery.noEmbed).toList();
+          registry.capabilities.where((t) => !t.discovery.noEmbed).toList();
       final texts = [for (final t in toEmbed) t.embeddingSource()];
       final vecs = texts.isNotEmpty ? emb.embedDocuments(texts) : <Vector>[];
       _vectors = {
@@ -193,7 +193,7 @@ class ToolSearch {
     _ensureIndex();
     final excludeSet = exclude ?? <String>{};
     final tools = <Capability>[];
-    for (final t in registry.all_) {
+    for (final t in registry.capabilities) {
       if (excludeSet.contains(t.name)) continue;
       if (layer == 2 && t.discovery.noEmbed) continue;
       if (category != null) {

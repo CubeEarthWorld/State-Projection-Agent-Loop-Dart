@@ -458,7 +458,7 @@ void main() {
     // concurrently, and a mislabelled write loses the model's stated order.
     test('mutating state tools are not read-only', () {
       final registry = Registry();
-      installState(registry);
+      installBuiltins(registry, ['state']);
       final mutating = registry
           .all()
           .where((c) => c.name.startsWith('state.') && !c.name.endsWith('.get'))
@@ -472,7 +472,7 @@ void main() {
 
     test('state writes are auto-allowed by the default policy', () {
       final registry = Registry();
-      installState(registry);
+      installBuiltins(registry, ['state']);
       final session = Session(ScriptedLLM([]), registry: registry); // default (auto_safe) policy
       final capability = session.registry.get('state.goal.set')!;
       expect(session.policy.evaluate(capability, {'text': 'x'}).decision, equals('allow'));
@@ -526,7 +526,7 @@ void main() {
           config: session.config,
           registry: session.registry,
           ledger: session.ledger,
-          runId: session.run.id,
+          run: session.run,
         );
 
     List<(String, String)> observations(Session session) => [
@@ -624,7 +624,7 @@ void main() {
 
     test('restores the working state', () async {
       final registry = Registry();
-      installState(registry);
+      installBuiltins(registry, ['state']);
       final session = Session(
         ScriptedLLM([
           DecisionStep(ScriptedLLM.call('state.goal.set', arguments: {'text': 'find the key'})),

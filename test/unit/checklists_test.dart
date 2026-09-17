@@ -45,7 +45,7 @@ void main() {
         config: session.config,
         registry: session.registry,
         ledger: session.ledger,
-        runId: session.run.id);
+        run: session.run);
     final kernel = session.projection.get('kernel')!;
     expect(kernel.render(turn).first.content.toString(),
         contains('Parameters (JSON Schema)'));
@@ -462,7 +462,7 @@ void main() {
     session.rewind(toTurn: 1);
     expect((session.checklists.execute('get', {'id': id}) as Map)['name'],
         'original');
-    installSpawn(session.registry);
+    installBuiltins(session.registry, ['spawn']);
     final result = await session.invoke('meta.agent.spawn', {
       'task': 'work',
       'checklist_ids': [id]

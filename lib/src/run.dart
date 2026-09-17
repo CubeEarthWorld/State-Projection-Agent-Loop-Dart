@@ -2,9 +2,10 @@
 ///
 /// A [Run] is one job/conversation execution. Its state is not implicit in
 /// "is the process still alive" — it is an explicit, ledger-recorded value
-/// that a new process can read back after a restart. Approval is a
-/// first-class state (`WAITING_FOR_APPROVAL`) with its own persisted record
-/// ([ApprovalRequest]), not just a hook that blocks a batch and forgets why.
+/// that a new process can read back after a restart. Waiting is a
+/// first-class state (`WAITING_FOR_APPROVAL`, `WAITING_FOR_USER`) with its
+/// own persisted record ([ApprovalRequest], [PendingQuestion]), not just a
+/// hook that blocks a batch and forgets why.
 ///
 /// A [Command] is one planned invocation of a capability. Its `id` is
 /// stable across retries of the *same* logical attempt (never regenerated
@@ -99,6 +100,52 @@ class ApprovalRequest {
   }
 }
 
+/// What a handler returns to pause the run until the user answers
+/// (see the `ask` pack). The runtime turns it into a [PendingQuestion].
+class Question {
+  Question(this.text, {this.choices});
+  final String text;
+  final List<String>? choices;
+}
+
+/// A question the run is waiting on, persisted in the snapshot so the pause
+/// survives a restart. `Session.answer` fills [answer] and resumes.
+class PendingQuestion {
+  PendingQuestion({
+    required this.id,
+    required this.commandId,
+    required this.callId,
+    required this.text,
+    this.choices,
+    this.answer,
+  });
+
+  final String id;
+  final String commandId;
+  final String callId;
+  final String text;
+  final List<String>? choices;
+  String? answer;
+
+  Map<String, Object?> toMap() => {
+        'id': id,
+        'command_id': commandId,
+        'call_id': callId,
+        'text': text,
+        'choices': choices,
+        'answer': answer,
+      };
+
+  factory PendingQuestion.fromMap(Map<String, Object?> m) => PendingQuestion(
+        id: m['id'] as String,
+        commandId: m['command_id'] as String,
+        callId: m['call_id'] as String,
+        text: m['text'] as String,
+        choices: (m['choices'] as List?)?.cast<String>(),
+        answer: m['answer'] as String?,
+      );
+}
+
 double _nowSeconds() => DateTime.now().millisecondsSinceEpoch / 1000.0;
 
 /// The state machine for one execution. Every transition and approval event
@@ -117,8 +164,9 @@ class Run {
   // Kept around after resolveApproval() clears pendingApproval, so resume
   // can find the exact command id that was approved instead of minting a
   // fresh one: an approved command must keep its idempotency key across the
-  // pause.
+  // pause. The runtime clears it once consumed.
   ApprovalRequest? lastResolvedApproval;
+  PendingQuestion? pendingQuestion;
   List<ToolCall> pendingCalls = [];
   Object? result;
 
@@ -243,6 +291,44 @@ class Run {
     return request;
   }
 
+  // -- questions ------------------------------------------------------------
+
+  /// Park the run on a question the model asked the user (the `ask` pack).
+  PendingQuestion askQuestion(Command command, String callId, Question question) {
+    final pending = PendingQuestion(
+      id: newId('question'),
+      commandId: command.id,
+      callId: callId,
+      text: question.text,
+      choices: question.choices,
+    );
+    pendingQuestion = pending;
+    ledger.append(id, 'question_asked', {
+      'question_id': pending.id,
+      'command_id': command.id,
+      'call_id': callId,
+      'text': question.text,
+      'choices': question.choices,
+    });
+    transition('WAITING_FOR_USER', reason: 'question');
+    return pending;
+  }
+
+  /// Answer the pending question; the asking command completes with the
+  /// answer as its result and the run is `RUNNING` again.
+  PendingQuestion answer(String text) {
+    final pending = pendingQuestion;
+    if (pending == null) {
+      throw RunStateError('Run $id has no pending question to answer');
+    }
+    pending.answer = text;
+    ledger.append(id, 'question_answered', {'question_id': pending.id, 'answer': text});
+    recordOutcome(commands[pending.commandId]!, 'ok');
+    pendingQuestion = null;
+    transition('RUNNING', reason: 'answered');
+    return pending;
+  }
+
   // -- persistence snapshot ------------------------------------------------
 
   Map<String, Object?> toSnapshotState() => {
@@ -274,6 +360,7 @@ class Run {
                 'policy_revision': pendingApproval!.policyRevision,
                 'expires_at': pendingApproval!.expiresAt,
               },
+        'pending_question': pendingQuestion?.toMap(),
         'pending_calls': [
           for (final c in pendingCalls)
             {'id': c.id, 'name': c.name, 'arguments': c.arguments, 'raw_arguments': c.rawArguments},
@@ -322,6 +409,8 @@ class Run {
         expiresAt: (pa['expires_at'] as num?)?.toDouble(),
       );
     }
+    final pq = (state['pending_question'] as Map?)?.cast<String, Object?>();
+    if (pq != null) run.pendingQuestion = PendingQuestion.fromMap(pq);
     run.pendingCalls = [
       for (final c in (state['pending_calls'] as List? ?? []))
         ToolCall(

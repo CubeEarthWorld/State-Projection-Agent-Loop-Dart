@@ -41,11 +41,12 @@ TurnContext makeTurn({
 }) {
   final cfg = Config();
   cfg.projection.windowTokens = window;
+  final l = ledger ?? InMemoryLedger();
   return TurnContext(
     config: cfg,
     registry: registry ?? Registry(),
-    ledger: ledger ?? InMemoryLedger(),
-    runId: runId,
+    ledger: l,
+    run: Run(runId, 'ses_test', l),
     workingState: workingState ?? WorkingState(),
     candidates: candidates ?? [],
   );
