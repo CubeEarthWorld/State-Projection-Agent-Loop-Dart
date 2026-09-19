@@ -455,6 +455,19 @@ void main() {
     });
   });
 
+  group('branch keeps the session wiring', () {
+    test('a branch of a session without builtins installs none', () async {
+      final seen = <String>[];
+      final session = Session(ScriptedLLM([const TextStep('one')]),
+          builtins: const [], onEvent: (e) => seen.add(e.type));
+      await session.send('hi');
+      session.branch();
+      expect(session.registry.capabilities, isEmpty,
+          reason: 'branching must not install packs the parent excluded');
+      expect(seen, contains('branch_created'), reason: "the parent's observer follows the branch");
+    });
+  });
+
   group('resume from ledger', () {
     test('resuming writes no second run and keeps the kernel', () async {
       final dir = Directory.systemTemp.createTempSync('spal_resume_');

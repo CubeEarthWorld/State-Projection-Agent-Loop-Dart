@@ -90,7 +90,9 @@ class Session {
     store = ArtifactStore(run.id, directory: artifactsDir != null ? Directory(artifactsDir) : null);
     search = ToolSearch(this.registry, embedder: embedder, vector: this.config.discovery.vector);
 
-    _kernelText = kernel;
+    // What branch() hands to the new session: code, not state, so it is
+    // passed on rather than rebuilt from defaults.
+    _branchArgs = (kernel: kernel, sections: sections, builtins: builtins, onEvent: onEvent);
     final sectionList = sections ??
         buildDefaultSections(
           this.config.projection.sections,
@@ -148,7 +150,8 @@ class Session {
   late final PolicyEngine policy;
   late ArtifactStore store;
   late final ToolSearch search;
-  late String _kernelText;
+  late final ({String kernel, List<Section>? sections, Iterable<String> builtins, void Function(Event)? onEvent})
+      _branchArgs;
   late final Projection projection;
   late final Runtime runtime;
   late WorkingState workingState;
@@ -247,7 +250,10 @@ class Session {
   (Session, List<String>) branch({int? atMessage}) {
     final newSession = Session(
       llm,
-      kernel: _kernelText,
+      kernel: _branchArgs.kernel,
+      sections: _branchArgs.sections,
+      builtins: _branchArgs.builtins,
+      onEvent: _branchArgs.onEvent,
       config: Config.fromDict(deepCopy(config.toDict())),
       registry: registry,
       embedder: search.embedder,
