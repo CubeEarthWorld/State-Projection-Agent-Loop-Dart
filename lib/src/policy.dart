@@ -128,6 +128,11 @@ class Rule {
   final ArgPredicate? argPredicate;
   final String reason;
 
+  /// Matches every call: the layer's fallback, consulted after every rule
+  /// that names something (see `PolicyEngine._matchLayer`).
+  bool get isCatchAll =>
+      capabilityPattern == '*' && effectKind == null && resourcePattern == '*' && argPredicate == null;
+
   bool matches(Capability capability, Effect effect, Map<String, Object?> arguments) {
     if (!globMatch(capability.name, capabilityPattern)) return false;
     if (effectKind != null && effect.kind != effectKind) return false;
@@ -228,12 +233,14 @@ class PolicyEngine {
 
   // -- evaluation -----------------------------------------------------------
 
+  /// The first matching rule in the layer. A rule that matches everything (a
+  /// preset's closing `require_approval`) is the layer's fallback and is
+  /// consulted last, so a grant added after `applyPreset` on the same layer
+  /// takes effect instead of being shadowed by it.
   Rule? _matchLayer(
       String layer, Capability capability, Effect effect, Map<String, Object?> arguments) {
-    for (final rule in layers[layer]!) {
-      if (rule.matches(capability, effect, arguments)) return rule;
-    }
-    return null;
+    final matched = [for (final rule in layers[layer]!) if (rule.matches(capability, effect, arguments)) rule];
+    return matched.where((rule) => !rule.isCatchAll).firstOrNull ?? matched.firstOrNull;
   }
 
   (String, String, String) _evaluateEffect(

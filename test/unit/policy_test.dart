@@ -33,6 +33,18 @@ void main() {
     });
   });
 
+  group('PresetFallback', () {
+    test('a grant added after a preset is not shadowed by its catch-all', () {
+      final engine = PolicyEngine(defaultDecision: 'require_approval');
+      engine.applyPreset('auto_safe');
+      engine.addRule('workspace', Rule(decision: 'allow', capabilityPattern: 'mail.*'));
+      final send = cap(name: 'mail.message.send', effects: [Effect(kind: 'external', resource: 'smtp:*')]);
+      final other = cap(name: 'crm.contact.update', effects: [Effect(kind: 'external', resource: 'crm:*')]);
+      expect(engine.evaluate(send, {}).decision, equals('allow'));
+      expect(engine.evaluate(other, {}).decision, equals('require_approval'));
+    });
+  });
+
   group('Layering', () {
     test('deny at higher layer cannot be relaxed by lower', () {
       final engine = PolicyEngine(defaultDecision: 'allow');
