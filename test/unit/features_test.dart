@@ -174,25 +174,23 @@ void main() {
       var foldPrompts = 0;
       final session = Session(
         ScriptedLLM([
-          const TextStep('r1'),
-          const TextStep('r2'),
-          const TextStep('r3'),
+          for (var i = 1; i <= 12; i++) TextStep('r$i'),
           CallbackStep((messages, tools) {
             expect(messages.first.content, foldInstructions);
             expect(tools, isNull);
             foldPrompts++;
             return '```json\n{"facts_add": ["user likes blue"], "next_actions": ["ship"]}\n```';
           }),
-          const TextStep('r4'),
+          const TextStep('r13'),
         ]),
         config: Config.fromDict({'compaction': {'trigger_ratio': 0.01}}),
         policy: allowAll(),
       );
-      await session.send('m1');
-      await session.send('m2');
-      await session.send('m3');
-      expect(foldPrompts, 0, reason: 'nothing older than the full window yet');
-      expect(await session.send('m4'), 'r4');
+      for (var i = 1; i <= 12; i++) {
+        await session.send('m$i');
+      }
+      expect(foldPrompts, 0, reason: 'no fold until the verbatim point steps (four times fullWindow)');
+      expect(await session.send('m13'), 'r13');
       expect(foldPrompts, 1);
       expect(session.workingState.confirmedFacts, ['user likes blue']);
       expect(session.workingState.nextActions, ['ship']);
@@ -207,11 +205,9 @@ void main() {
       // window (1500) could never be reached and the fold was unreachable.
       final session = Session(
         ScriptedLLM([
-          const TextStep('r1'),
-          const TextStep('r2'),
-          const TextStep('r3'),
+          for (var i = 1; i <= 12; i++) TextStep('r$i'),
           CallbackStep((messages, tools) => '{"facts_add": ["seen"]}'),
-          const TextStep('r4'),
+          const TextStep('r13'),
         ]),
         config: Config.fromDict({
           'projection': {'window_tokens': 2000},
@@ -219,8 +215,8 @@ void main() {
         }),
         policy: allowAll(),
       );
-      for (final m in ['m1', 'm2', 'm3', 'm4']) {
-        await session.send('$m ${'word ' * 120}');
+      for (var i = 1; i <= 13; i++) {
+        await session.send('m$i ${'word ' * 120}');
       }
       expect(session.workingState.confirmedFacts, ['seen']);
     });
@@ -228,17 +224,15 @@ void main() {
     test('an invalid delta is skipped and logged, never merged', () async {
       final session = Session(
         ScriptedLLM([
-          const TextStep('r1'),
-          const TextStep('r2'),
-          const TextStep('r3'),
+          for (var i = 1; i <= 12; i++) TextStep('r$i'),
           const TextStep('{"facts_add": "not a list"}'),
-          const TextStep('r4'),
+          const TextStep('r13'),
         ]),
         config: Config.fromDict({'compaction': {'trigger_ratio': 0.01}}),
         policy: allowAll(),
       );
-      for (final m in ['m1', 'm2', 'm3', 'm4']) {
-        await session.send(m);
+      for (var i = 1; i <= 13; i++) {
+        await session.send('m$i');
       }
       expect(session.workingState.confirmedFacts, isEmpty);
       final notices = [for (final e in session.ledger.iterRun(session.run.id)) if (e.type == 'notice') e.data['text'].toString()];

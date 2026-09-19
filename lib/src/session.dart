@@ -563,24 +563,22 @@ class Session {
     if (observer != null) observer('tool', text);
   }
 
-  /// One step of the verbatim point: cut the tail back to `fullWindow`
-  /// messages. Taken when the tail has grown to four times that (a turn adds
-  /// several messages, so this is one rebuild every few turns), or when a
-  /// fold needs something older than the point to work on ([force]).
-  /// Between steps the rendering of every older message is unchanged, so
-  /// the prompt prefix stays byte-identical and a provider's cache keeps
-  /// hitting.
-  bool _stepTiers({required bool force}) {
+  /// Move the history's verbatim point forward in steps: only when the
+  /// verbatim tail has grown to four times `fullWindow` is it cut back to
+  /// `fullWindow`. Between steps the rendering of every older message is
+  /// unchanged, so the prompt prefix stays byte-identical and a provider's
+  /// cache keeps hitting; a step is one deliberate rebuild.
+  bool _stepTiers() {
     final keep = config.compression.fullWindow;
     final history = renderable(ledger, run.id);
     final tail = history.where((h) => h.$1.sequence >= workingState.verbatimSequence).length;
-    if (keep <= 0 || tail <= keep || (tail <= 4 * keep && !force)) return false;
+    if (keep <= 0 || tail <= 4 * keep) return false;
     workingState.verbatimSequence = history[history.length - keep].$1.sequence;
     return true;
   }
 
   (TurnContext, List<Message>) _project() {
-    _stepTiers(force: false);
+    _stepTiers();
     final ctx = _context();
     final messages = projection.render(
       ctx,
@@ -608,15 +606,16 @@ class Session {
     if (used <= ratio * room) return false;
     // Fold from the ledger, never from the projection: what masking cleared
     // from the prompt is exactly what a fold must still read. The region is
-    // everything before the verbatim point, so the fold changes only what
-    // the tiers already stopped rendering in full.
-    List<(Event, Message)> region() => [
-          for (final (e, m) in renderable(ledger, run.id))
-            if (workingState.foldedSequence < e.sequence && e.sequence < workingState.verbatimSequence)
-              (e, m),
-        ];
-    var foldable = region();
-    if (foldable.isEmpty && _stepTiers(force: true)) foldable = region();
+    // everything before the verbatim point and after the last fold, so a
+    // fold happens at most once per step of the point, when the prefix is
+    // being rebuilt anyway, and always has a step's worth of messages to
+    // work on. Forcing the point down to fold sooner produced a fold every
+    // turn under a window the verbatim tail alone overflows, each one a
+    // model call and a cache rebuild.
+    final foldable = [
+      for (final (e, m) in renderable(ledger, run.id))
+        if (workingState.foldedSequence < e.sequence && e.sequence < workingState.verbatimSequence) (e, m),
+    ];
     if (foldable.isEmpty) return false;
     final transcript = [for (final (_, m) in foldable) '${m.role}: ${m.content}'].join('\n');
     final prompt = [
