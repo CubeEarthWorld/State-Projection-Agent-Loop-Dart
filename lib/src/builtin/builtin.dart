@@ -10,6 +10,7 @@ import '../registry.dart';
 import 'ask.dart' show askHandlers;
 import 'checklist.dart' show checklistHandlers;
 import 'defs.g.dart';
+import 'memory.dart' show memoryHandlers;
 import 'meta.dart' show metaHandlers, spawnHandlers;
 import 'state.dart' show stateHandlers;
 
@@ -22,6 +23,7 @@ final Map<String, Map<String, CtxHandler>> _packs = {
   'state': stateHandlers,
   'spawn': spawnHandlers,
   'ask': askHandlers,
+  'memory': memoryHandlers,
 };
 
 /// Every pack name [installBuiltins] accepts.

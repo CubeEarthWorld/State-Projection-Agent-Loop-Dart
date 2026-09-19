@@ -312,6 +312,8 @@ List<Rule> _presetRules(String preset) {
         effectKind: 'external', resourcePattern: 'user:*', reason: 'preset:ask_user'),
     Rule(decision: 'allow', capabilityPattern: 'state.*',
         effectKind: 'write', resourcePattern: 'working_state:*', reason: 'preset:local_working_state'),
+    Rule(decision: 'allow', capabilityPattern: 'memory.*', resourcePattern: 'memory:*',
+        reason: 'preset:local_memory'),
   ];
   return switch (preset) {
     'deny_all' => [rule('deny')],

@@ -8,7 +8,8 @@ library;
 
 export 'src/artifacts.dart' show ArtifactStore, ArtifactRecord, ref, isRef, refKey;
 export 'src/builtin/builtin.dart' show installBuiltins, defaultBuiltins, builtinPacks;
-export 'src/builtin/skills.dart' show skillCapability;
+export 'src/builtin/mcp.dart' show McpProvider;
+export 'src/builtin/skills.dart' show skillCapability, loadSkills;
 export 'src/builtin/toolkits.dart' show installToolkits;
 export 'src/compaction.dart' show foldSchema, foldInstructions, parseFoldReply, applyFoldDelta;
 export 'src/checklists.dart' show ChecklistStore, checklistStatuses, checklistContextModes;
@@ -42,7 +43,8 @@ export 'src/context.dart' show ToolContext, TurnContext;
 export 'src/discovery.dart' show ScoredTool, ToolSearch, tokenize;
 export 'src/embeddings.dart' show EmbeddingBackend, HashingEmbedding, Vector, cosine;
 export 'src/events.dart'
-    show Event, EventLedger, InMemoryLedger, JsonlLedger, ObservedLedger, Snapshot, eventTypes, renderableTypes, eventToMessage;
+    show Event, EventLedger, InMemoryLedger, JsonlLedger, ObservedLedger, RunSummary, Snapshot, eventTypes, renderableTypes, eventToMessage;
+export 'src/memory.dart' show MemoryStore, JsonlMemoryStore, Note;
 export 'src/ids.dart' show newId, newUlid;
 export 'src/llm.dart'
     show
@@ -77,6 +79,7 @@ export 'src/projection.dart'
         KernelSection,
         TocSection,
         HistorySection,
+        InstructionsSection,
         CandidatesSection,
         ChecklistSection,
         WorkingStateSection,

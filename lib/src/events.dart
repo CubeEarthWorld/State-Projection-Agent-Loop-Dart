@@ -101,6 +101,26 @@ class Snapshot {
   final Map<String, Object?> state;
 }
 
+/// What a ledger knows about a run without reading its events: enough to
+/// list, pick and resume one.
+class RunSummary {
+  RunSummary({required this.runId, required this.sessionId, required this.state, required this.ts});
+
+  final String runId;
+  final String sessionId;
+  final String state;
+  final double ts; // the last snapshot's time
+}
+
+List<RunSummary> _summaries(Iterable<Snapshot> snapshots) => [
+      for (final s in snapshots)
+        RunSummary(
+            runId: s.runId,
+            sessionId: (s.state['session_id'] as String?) ?? '',
+            state: (s.state['state'] as String?) ?? '',
+            ts: s.ts),
+    ]..sort((a, b) => b.ts.compareTo(a.ts));
+
 abstract interface class EventLedger {
   Event append(String runId, String type, Map<String, Object?> data);
 
@@ -111,6 +131,9 @@ abstract interface class EventLedger {
   void saveSnapshot(Snapshot snapshot);
 
   Snapshot? loadSnapshot(String runId);
+
+  /// Every run with a snapshot, newest first.
+  List<RunSummary> listRuns();
 }
 
 double _nowSeconds() => DateTime.now().millisecondsSinceEpoch / 1000.0;
@@ -158,6 +181,9 @@ class InMemoryLedger implements EventLedger {
 
   @override
   Snapshot? loadSnapshot(String runId) => _snapshots[runId];
+
+  @override
+  List<RunSummary> listRuns() => _summaries(_snapshots.values);
 }
 
 /// File-backed ledger: one append-only `<run_id>.jsonl` per run plus a
@@ -241,6 +267,18 @@ class JsonlLedger implements EventLedger {
       state: (d['state'] as Map).cast<String, Object?>(),
     );
   }
+
+  @override
+  List<RunSummary> listRuns() {
+    const suffix = '.snapshot.json';
+    return _summaries([
+      for (final f in directory.listSync().whereType<File>())
+        if (f.path.endsWith(suffix))
+          if (loadSnapshot(f.uri.pathSegments.last.substring(0, f.uri.pathSegments.last.length - suffix.length))
+              case final snapshot?)
+            snapshot,
+    ]);
+  }
 }
 
 /// The message a renderable event projects to; null for any other type.
@@ -307,4 +345,7 @@ class ObservedLedger implements EventLedger {
 
   @override
   Snapshot? loadSnapshot(String runId) => inner.loadSnapshot(runId);
+
+  @override
+  List<RunSummary> listRuns() => inner.listRuns();
 }

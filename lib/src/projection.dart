@@ -23,6 +23,7 @@ import 'messages.dart';
 import 'registry.dart';
 import 'tokens.dart';
 import 'serialization.dart';
+import 'dart:io';
 
 /// One slice of the prompt.
 ///
@@ -119,6 +120,48 @@ class KernelSection extends Section {
 }
 
 /// Layer-1 table of contents. Rebuilds when the registry epoch changes.
+/// Standing instructions a workspace carries in `AGENTS.md` (or
+/// `CLAUDE.md`): every such file from the filesystem root down to `root`,
+/// outermost first, so the nearest file has the last word. Fixed for the
+/// session and labelled by origin; the kernel stays the host's own text.
+class InstructionsSection extends Section {
+  InstructionsSection(String root, {List<String> files = defaultFiles})
+      : _messages = switch (load(root, files)) {
+          '' => const [],
+          final body => [Message(role: kSystem, content: body)],
+        };
+
+  static const List<String> defaultFiles = ['AGENTS.md', 'CLAUDE.md'];
+
+  @override
+  final String name = 'instructions';
+  final List<Message> _messages;
+
+  static String load(String root, [List<String> files = defaultFiles]) {
+    final found = <(String, String)>[];
+    var folder = Directory(root).absolute;
+    while (true) {
+      for (final name in files) {
+        final candidate = File('${folder.path}${Platform.pathSeparator}$name');
+        if (candidate.existsSync()) {
+          found.add((candidate.path, candidate.readAsStringSync().trim()));
+          break; // one file per folder: the first name listed wins
+        }
+      }
+      final parent = folder.parent;
+      if (parent.path == folder.path) break;
+      folder = parent;
+    }
+    return [
+      for (final (path, text) in found.reversed)
+        if (text.isNotEmpty) '[Instructions from $path]\n$text',
+    ].join('\n\n');
+  }
+
+  @override
+  List<Message> render(TurnContext ctx) => List.of(_messages);
+}
+
 class TocSection extends Section {
   int _cachedEpoch = -1;
   List<Message> _cached = [];
@@ -410,6 +453,7 @@ List<Section> buildDefaultSections(
 }) {
   final factories = <String, Section Function()>{
     'kernel': () => KernelSection(kernelText),
+    'instructions': () => InstructionsSection(Directory.current.path),
     'toc': () => TocSection(),
     'working_state': () => WorkingStateSection(),
     'checklists': () => ChecklistSection(),

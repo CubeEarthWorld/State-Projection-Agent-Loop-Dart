@@ -24,6 +24,7 @@ import 'events.dart';
 import 'ids.dart';
 import 'json_schema.dart' show validateValue;
 import 'llm.dart';
+import 'memory.dart';
 import 'messages.dart';
 import 'policy.dart';
 import 'projection.dart';
@@ -70,6 +71,7 @@ class Session {
     void Function(Event event)? onEvent,
     this.onDelta,
     Hooks hooks = const Hooks(),
+    MemoryStore? memory,
     Snapshot? restored,
   })  : config = config ?? Config(),
         registry = registry ?? Registry() {
@@ -88,6 +90,10 @@ class Session {
     }
 
     this.policy = policy ?? _defaultPolicy();
+    // Cross-session notes (the `memory` pack). Beside the ledger when the
+    // session persists, in process memory otherwise.
+    final ledgerDir = this.config.persistence.ledgerDirectory;
+    this.memory = memory ?? JsonlMemoryStore(ledgerDir == null ? null : '$ledgerDir/memory.jsonl');
 
     final artifactsDir = this.config.artifacts.directory;
     store = ArtifactStore(run.id, directory: artifactsDir != null ? Directory(artifactsDir) : null);
@@ -95,7 +101,14 @@ class Session {
 
     // What branch() hands to the new session: code, not state, so it is
     // passed on rather than rebuilt from defaults.
-    _branchArgs = (kernel: kernel, sections: sections, builtins: builtins, onEvent: onEvent);
+    _branchArgs = (
+      kernel: kernel,
+      sections: sections,
+      builtins: builtins,
+      onEvent: onEvent,
+      hooks: hooks,
+      onDelta: onDelta,
+    );
     final sectionList = sections ??
         buildDefaultSections(
           this.config.projection.sections,
@@ -153,8 +166,15 @@ class Session {
   late final PolicyEngine policy;
   late ArtifactStore store;
   late final ToolSearch search;
-  late final ({String kernel, List<Section>? sections, Iterable<String> builtins, void Function(Event)? onEvent})
-      _branchArgs;
+  late final ({
+    String kernel,
+    List<Section>? sections,
+    Iterable<String> builtins,
+    void Function(Event)? onEvent,
+    Hooks hooks,
+    void Function(String, String)? onDelta,
+  }) _branchArgs;
+  late final MemoryStore memory;
   late final Projection projection;
   late final Runtime runtime;
   // `onDelta(source, text)` sees assistant text as it streams in (source
@@ -270,6 +290,9 @@ class Session {
       sections: _branchArgs.sections,
       builtins: _branchArgs.builtins,
       onEvent: _branchArgs.onEvent,
+      hooks: _branchArgs.hooks,
+      onDelta: _branchArgs.onDelta,
+      memory: memory,
       config: Config.fromDict(deepCopy(config.toDict())),
       registry: registry,
       embedder: search.embedder,
