@@ -1,11 +1,5 @@
 # state_projection_loop
 
-**v0.4: Built-in planning checklists.** Every session includes one unified
-`planning.checklist.manage` tool for named ULID plans, item edits, progress,
-context visibility and JSON handoff. Plans use the same in-memory or JSONL
-storage as the conversation and survive history compression and completion.
-See [the checklist specification and Python/Dart examples](docs/checklists.md).
-
 **State-Projection Agent Loop** — a vendor-agnostic, resumable LLM agent
 runtime built on two principles:
 
@@ -85,7 +79,7 @@ This port has **no Dart equivalent of Python's runtime introspection**
 (`inspect`, `typing.get_type_hints`, `importlib`). Concretely:
 
 - There is no `@capability` decorator / `build_capability_from_function`.
-  Every `Capability` is built explicitly via `Capability.fromMap(definition,
+  Every `Capability` is built explicitly via `Capability.fromDict(definition,
   handler: ..., wantsCtx: true)` — a plain `Map<String, Object?>` definition
   (JSON Schema parameters, effects, retry safety, ...) plus an explicit
   handler function and an explicit `wantsCtx` flag, instead of being derived
@@ -196,7 +190,10 @@ if (session.run.state == 'WAITING_FOR_APPROVAL') {
 
 Evaluation order is fixed: `absolute > admin > developer > workspace > session > llm`.
 The most restrictive matching rule wins across layers — a `deny` at any
-layer can never be relaxed by one below it. An LLM-proposed safety
+layer can never be relaxed by one below it. Within a layer the first
+matching rule wins, except that a rule matching everything (a preset's
+closing `require_approval`) is that layer's fallback, so a grant added after
+`applyPreset` takes effect instead of being shadowed by it. An LLM-proposed safety
 assessment (`policy.setLlmSafetyMode('advisory' | 'approval_routing')`) can
 escalate toward approval but can never grant a bare `allow` or issue the
 final `deny` by itself.
@@ -207,13 +204,13 @@ A `WAITING_FOR_APPROVAL` run survives a process restart:
 
 ```dart
 // process 1
-final session = Session(llm, config: Config.fromMap(
+final session = Session(llm, config: Config.fromDict(
     {'mode': 'job', 'persistence': {'ledger_directory': './runs'}}));
 await session.runJob('delete the old backups');
 final runId = session.run.id;   // paused: WAITING_FOR_APPROVAL
 
 // process 2 (hours later, no reference to the first Session)
-final restored = Session.resumeFromLedger(llm, runId, config: cfg, registry: registry);
+final restored = Session.resumeFromLedger(llm, runId, config: cfg, kernel: kernel, registry: registry);
 restored.resolveApproval('approved');
 final result = await restored.resume();
 ```
@@ -300,7 +297,7 @@ via `Session(sections: ...)` or `session.addSection(...)`.
 
 ```dart
 final session = Session(llm, builtins: ['meta', 'checklist', 'ask'], onEvent: print,
-    config: Config.fromMap({'compaction': {'trigger_ratio': 0.8}}));
+    config: Config.fromDict({'compaction': {'trigger_ratio': 0.8}}));
 session.registry.register(skillCapability('deploy', deploySteps, summary: 'How to deploy'));
 installToolkits(session.registry, Directory('./workspace'));
 
@@ -313,24 +310,8 @@ if (session.run.state == 'WAITING_FOR_USER') {
 
 Cross-session memory is specified but not built; see [docs/roadmap.md](docs/roadmap.md).
 
-## Changes in 0.5 (pre-1.0: breaking, no aliases)
+## Live check
 
-- `Session(builtins: ...)` / `installBuiltins()` replace `ensureMetaTools`,
-  `ensureChecklistTool`, `installState`, `installSpawn`.
-- One `ToolContext` for sections and handlers replaces `TurnContext`;
-  `extraSections` is gone (pass `sections:`).
-- `Section.shrink` replaces the hard-coded overflow ladder;
-  `discovery.kernel_note` replaces the hard-coded runtime-note table.
-- `Registry.capabilities` replaces `all_`; `categories()` returns
-  `(total, pinned)`; `categoriesWithPinned`, `registerMany`, `Message.meta`,
-  `ToolResult.elapsedS`, four never-emitted event types and the unused
-  `WAITING_FOR_USER` state are removed.
-- `Session.activate()` and `Runtime.reset()` are public;
-  `discovery.active_tools` replaces a hard-coded LRU size.
-- `example/deepseek_live.dart`: a dart:io OpenAI-compatible adapter and a
-  live end-to-end check (`DEEPSEEK_API_KEY=... dart run example/deepseek_live.dart`).
-- Handlers receive `ToolContext`; sections receive its superset `TurnContext`,
-  so projection state never reaches a tool. Shrinking counts native schemas.
-- New standard features, each optional: `ask` pack, loop guard, `result_schema`,
-  `onEvent` observers, compaction, `skillCapability`, `installToolkits`.
-
+`example/deepseek_live.dart` is a dart:io OpenAI-compatible adapter and a live
+end-to-end check: `LLM_API_KEY=... dart run example/deepseek_live.dart`
+(`DEEPSEEK_API_KEY` is read when `LLM_API_KEY` is unset).

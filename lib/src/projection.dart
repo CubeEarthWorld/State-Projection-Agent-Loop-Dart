@@ -186,54 +186,32 @@ class HistorySection extends Section {
   @override
   List<Message> render(TurnContext ctx) {
     final cfg = ctx.config.compression;
-    final events = ctx.ledger!
-        .iterRun(ctx.runId)
-        .where((e) => renderableTypes.contains(e.type))
-        .toList();
-    if (events.isEmpty) return [];
-
-    final n = events.length;
+    final history = renderable(ctx.ledger!, ctx.runId);
     final messages = <Message>[];
-    for (var i = 0; i < n; i++) {
-      final event = events[i];
-      final age = n - 1 - i;
-      final msgDict = eventToMessage(event);
-      if (msgDict == null) continue;
+    for (var i = 0; i < history.length; i++) {
+      final (event, message) = history[i];
+      final age = history.length - 1 - i;
       // Content may be a list of parts (text + images). Only a plain string
       // can be compressed; stringifying a part list would destroy it, so it
       // passes through untouched.
-      Object? content = msgDict['content'] ?? '';
+      var content = message.content;
       if (content is String && content.isNotEmpty) {
         if (event.sequence <= ctx.workingState.foldedSequence) {
           content = summarizeText(content); // folded into the working state
         } else if (age < cfg.fullWindow) {
           // verbatim
         } else if (age < cfg.compressedWindow) {
-          if (msgDict['role'] == kObservation) {
-            content = compressText(content, maxLines: cfg.observationMaxLines);
-          } else {
-            content = compressText(content, maxLines: cfg.compressedMaxLines);
-          }
+          content = compressText(content,
+              maxLines: message.role == kObservation
+                  ? cfg.observationMaxLines
+                  : cfg.compressedMaxLines);
         } else if (age < cfg.summaryWindow) {
           content = summarizeText(content);
         } else {
           continue;
         }
       }
-      messages.add(Message(
-        role: msgDict['role'] as String,
-        content: content,
-        toolCallId: msgDict['tool_call_id'] as String?,
-        name: msgDict['name'] as String?,
-        toolCalls: [
-          for (final tc in (msgDict['tool_calls'] as List? ?? []))
-            ToolCall(
-              name: (tc as Map)['name']?.toString() ?? '',
-              arguments: (tc['arguments'] as Map?)?.cast<String, Object?>() ?? {},
-              id: tc['id']?.toString() ?? '',
-            ),
-        ],
-      ));
+      messages.add(message.copyWith(content: content));
     }
     return pairToolCalls(messages);
   }
@@ -304,10 +282,10 @@ class CandidatesSection extends Section {
     if (ctx.candidates.isEmpty) return const [];
     List<String> lines;
     String header;
-    if (ctx.dedupeCandidateCards && ctx.apiTools.isNotEmpty) {
+    if (ctx.config.projection.dedupeCandidateCardsAgainstSchemas && ctx.apiTools.isNotEmpty) {
       lines = [
         for (final s in ctx.candidates)
-          s.tool.card.signature.isNotEmpty ? s.tool.card.signature : s.tool.name,
+          s.tool.card.signature,
       ];
       header = '[Tool candidates — auto-selected for this turn; schemas sent natively]';
     } else {

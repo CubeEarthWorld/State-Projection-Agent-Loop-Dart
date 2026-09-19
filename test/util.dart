@@ -1,9 +1,14 @@
 /// Shared test helpers: quick capability-definition builders.
 ///
 /// Port of `tests/_util.py`. Keys inside the returned map stay snake_case
-/// (they feed `Capability.fromMap`, which parses them the same way Python's
+/// (they feed `Capability.fromDict`, which parses them the same way Python's
 /// `Capability.from_dict` does); only Dart-side identifiers are camelCase.
 library;
+
+import 'package:state_projection_loop/state_projection_loop.dart';
+
+/// A policy that lets every call run, for tests that are not about policy.
+PolicyEngine allowAll() => PolicyEngine(defaultDecision: 'allow');
 
 String echoHandlerText(String text) => 'echo: $text';
 

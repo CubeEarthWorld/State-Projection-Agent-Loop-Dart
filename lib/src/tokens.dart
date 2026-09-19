@@ -72,3 +72,19 @@ int estimateTokens(Object? obj) {
   }
   return _estimator(obj.toString());
 }
+
+/// The longest prefix of [text] that fits [maxTokens].
+String truncateToTokens(String text, int maxTokens) {
+  if (estimateTokens(text) <= maxTokens) return text;
+  var lo = 0;
+  var hi = text.length;
+  while (lo < hi) {
+    final mid = (lo + hi + 1) ~/ 2;
+    if (estimateTokens(text.substring(0, mid)) <= maxTokens) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return text.substring(0, lo);
+}

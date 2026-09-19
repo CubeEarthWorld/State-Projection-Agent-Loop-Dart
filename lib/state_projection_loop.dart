@@ -89,10 +89,8 @@ export 'src/runtime.dart'
         Runtime,
         ToolResult,
         ExecuteBatchResult,
-        BudgetState,
-        validateArgs,
-        applyDefaults,
-        outcomes;
+        BudgetState;
+export 'src/json_schema.dart' show validateArgs, validateValue, applyDefaults;
 export 'src/session.dart' show Session, ConcurrencyError;
 export 'src/tokens.dart' show estimateTokens, estimateTextTokens, setEstimator;
 export 'src/working_state.dart' show WorkingState, RecordedDecision, workingStateFields;

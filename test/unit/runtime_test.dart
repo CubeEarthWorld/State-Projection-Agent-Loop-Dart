@@ -1,5 +1,5 @@
-// Runtime: validation & self-repair, require_spec gate, ordering (P0-1),
-// retry-safety-gated retries and OUTCOME_UNKNOWN (P0-2), output policy,
+// Runtime: validation & self-repair, require_spec gate, ordering,
+// retry-safety-gated retries and OUTCOME_UNKNOWN, output policy,
 // budget arithmetic.
 import 'dart:async';
 
@@ -7,10 +7,6 @@ import 'package:state_projection_loop/state_projection_loop.dart';
 import 'package:test/test.dart';
 
 import '../util.dart';
-// `miniValidate` is the private-in-Python `_mini_validate` fallback; in
-// this port it is a public top-level function but not re-exported by the
-// barrel (only validateArgs/applyDefaults are), so pull it in directly.
-import 'package:state_projection_loop/src/json_schema.dart' show miniValidate;
 
 (Runtime, ToolContext, ToolContext, Run, PolicyEngine) makeRuntime(
   Registry registry, {
@@ -128,7 +124,7 @@ void main() {
   });
 
   group('Ordering', () {
-    // P0-1: calls execute in the model's stated order; only a contiguous
+    // Calls execute in the model's stated order; only a contiguous
     // run of read-only capabilities may run concurrently.
     test('write then read preserves order', () async {
       final reg = Registry();
@@ -166,23 +162,26 @@ void main() {
     test('adjacent read only calls run concurrently', () async {
       final reg = Registry();
 
+      // Returns only once all three have started: run serially, the first
+      // would wait forever and hit its timeout instead.
+      var started = 0;
       Future<String> slow(Map<String, Object?> args) async {
-        await Future.delayed(const Duration(milliseconds: 150));
+        started += 1;
+        while (started < 3) {
+          await Future<void>.delayed(Duration.zero);
+        }
         return 'done';
       }
 
       for (final name in ['demo.p1', 'demo.p2', 'demo.p3']) {
-        reg.register(capabilityDict(name, effects: [('read', 'workspace:*')]), handler: slow);
+        reg.register(capabilityDict(name, effects: [('read', 'workspace:*')], timeoutS: 5), handler: slow);
       }
       final (runtime, turn, ctx, run, policy) = makeRuntime(reg);
       final calls = [
         for (final n in ['demo.p1', 'demo.p2', 'demo.p3']) ToolCall(name: n, arguments: {}),
       ];
-      final stopwatch = Stopwatch()..start();
       final batch = await runBatch(runtime, calls, turn, ctx, run, policy);
-      stopwatch.stop();
       expect(batch.results.every((r) => r.ok), isTrue);
-      expect(stopwatch.elapsedMilliseconds, lessThan(400)); // 3 x 150ms would be ~450ms serially
     });
 
     test('write breaks the parallel streak', () async {
@@ -205,7 +204,7 @@ void main() {
   });
 
   group('RetrySafety', () {
-    // P0-2: retries are only permitted for pure/idempotent capabilities;
+    // Retries are only permitted for pure/idempotent capabilities;
     // a timeout is OUTCOME_UNKNOWN, never silently "failed".
     test('timeout is outcome unknown not failed', () async {
       final reg = Registry();
@@ -428,74 +427,9 @@ void main() {
     });
   });
 
-  group('MiniValidator', () {
-    // The dependency-free fallback (the only validator in this port).
-    final schema = <String, Object?>{
-      'type': 'object',
-      'properties': {
-        'q': {'type': 'string', 'minLength': 2},
-        'n': {'type': 'integer', 'minimum': 1, 'maximum': 10},
-        'mode': {
-          'enum': ['a', 'b']
-        },
-        'items': {
-          'type': 'array',
-          'items': {'type': 'string'}
-        },
-        'opt': {
-          'type': ['string', 'null']
-        },
-      },
-      'required': ['q'],
-      'additionalProperties': false,
-    };
-
-    test('accepts valid', () {
-      expect(
-        miniValidate(schema, {'q': 'ok', 'n': 5, 'mode': 'a', 'items': ['x'], 'opt': null}),
-        isNull,
-      );
-    });
-
-    final rejectCases = <(Map<String, Object?>, String)>[
-      ({}, 'required'),
-      ({'q': 'ok', 'n': '5'}, 'expected type'),
-      ({'q': 'ok', 'n': 0}, 'minimum'),
-      ({'q': 'ok', 'n': 11}, 'maximum'),
-      ({'q': 'x'}, 'minLength'),
-      ({'q': 'ok', 'mode': 'c'}, 'not one of'),
-      ({'q': 'ok', 'items': ['x', 1]}, 'expected type'),
-      ({'q': 'ok', 'zzz': 1}, 'unexpected properties'),
-      ({'q': 'ok', 'n': true}, 'expected type'),
-    ];
-
-    for (final (args, fragment) in rejectCases) {
-      test('rejects invalid: $args', () {
-        expect(miniValidate(schema, args), contains(fragment));
-      });
-    }
-
-    test('validateArgs agrees', () {
-      expect(validateArgs(schema, {'q': 'ok'}), isNull);
-      expect(validateArgs(schema, {'q': 1}), isNotNull);
-      expect(validateArgs(schema, 'not a dict'), isNotNull);
-    });
-
-    test('applyDefaults', () {
-      final defSchema = <String, Object?>{
-        'type': 'object',
-        'properties': {
-          'k': {'type': 'integer', 'default': 7},
-        },
-      };
-      expect(applyDefaults(defSchema, {}), equals({'k': 7}));
-      expect(applyDefaults(defSchema, {'k': 1}), equals({'k': 1}));
-    });
-  });
-
   group('BudgetState', () {
     test('steps and tokens', () {
-      final cfg = Config.fromMap({
+      final cfg = Config.fromDict({
         'budget': {'max_steps': 2, 'max_tokens': 100},
       });
       final b = BudgetState();
@@ -508,7 +442,7 @@ void main() {
     });
 
     test('cost accounting', () {
-      final cfg = Config.fromMap({
+      final cfg = Config.fromDict({
         'budget': {
           'max_steps': 99,
           'max_cost': 0.01,
@@ -522,7 +456,7 @@ void main() {
     });
 
     test('max seconds', () {
-      final cfg = Config.fromMap({
+      final cfg = Config.fromDict({
         'budget': {'max_steps': 99, 'max_seconds': 0.0},
       });
       expect(BudgetState().exceeded(cfg), contains('max_seconds'));

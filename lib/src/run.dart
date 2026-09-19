@@ -63,13 +63,26 @@ class Command {
   String? resultRef; // artifact id, when ok
   String? error;
 
-  factory Command.newCommand(
-          String capabilityName, Map<String, Object?> arguments, String retrySafety) =>
-      Command(
-        id: newId('command'),
-        capabilityName: capabilityName,
-        arguments: arguments,
-        retrySafety: retrySafety,
+  Map<String, Object?> toDict() => {
+        'id': id,
+        'capability_name': capabilityName,
+        'arguments': arguments,
+        'retry_safety': retrySafety,
+        'outcome': outcome,
+        'attempts': attempts,
+        'result_ref': resultRef,
+        'error': error,
+      };
+
+  factory Command.fromDict(Map<String, Object?> d) => Command(
+        id: d['id'] as String,
+        capabilityName: d['capability_name'] as String,
+        arguments: (d['arguments'] as Map).cast<String, Object?>(),
+        retrySafety: d['retry_safety'] as String,
+        outcome: d['outcome'] as String,
+        attempts: (d['attempts'] as num).toInt(),
+        resultRef: d['result_ref'] as String?,
+        error: d['error'] as String?,
       );
 }
 
@@ -82,7 +95,6 @@ class ApprovalRequest {
     required this.policyRevision,
     this.expiresAt,
     this.resolution, // "approved" | "denied" | "expired" | null (pending)
-    this.resolvedAt,
   });
 
   final String id;
@@ -92,7 +104,28 @@ class ApprovalRequest {
   final int policyRevision;
   double? expiresAt;
   String? resolution;
-  double? resolvedAt;
+
+  Map<String, Object?> toDict() => {
+        'id': id,
+        'command_id': commandId,
+        'effects': [for (final e in effects) e.toDict()],
+        'reason': reason,
+        'policy_revision': policyRevision,
+        'expires_at': expiresAt,
+        'resolution': resolution,
+      };
+
+  factory ApprovalRequest.fromDict(Map<String, Object?> d) => ApprovalRequest(
+        id: d['id'] as String,
+        commandId: d['command_id'] as String,
+        effects: [
+          for (final e in d['effects'] as List) Effect.fromDict((e as Map).cast<String, Object?>()),
+        ],
+        reason: d['reason'] as String,
+        policyRevision: (d['policy_revision'] as num).toInt(),
+        expiresAt: (d['expires_at'] as num?)?.toDouble(),
+        resolution: d['resolution'] as String?,
+      );
 
   bool isExpired({double? now}) {
     final t = now ?? DateTime.now().millisecondsSinceEpoch / 1000.0;
@@ -127,7 +160,7 @@ class PendingQuestion {
   final List<String>? choices;
   String? answer;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'id': id,
         'command_id': commandId,
         'call_id': callId,
@@ -136,7 +169,7 @@ class PendingQuestion {
         'answer': answer,
       };
 
-  factory PendingQuestion.fromMap(Map<String, Object?> m) => PendingQuestion(
+  factory PendingQuestion.fromDict(Map<String, Object?> m) => PendingQuestion(
         id: m['id'] as String,
         commandId: m['command_id'] as String,
         callId: m['call_id'] as String,
@@ -202,7 +235,11 @@ class Run {
 
   Command newCommand(String capabilityName, Map<String, Object?> arguments, String retrySafety) {
     _assertNotTerminal();
-    final cmd = Command.newCommand(capabilityName, arguments, retrySafety);
+    final cmd = Command(
+        id: newId('command'),
+        capabilityName: capabilityName,
+        arguments: arguments,
+        retrySafety: retrySafety);
     commands[cmd.id] = cmd;
     ledger.append(id, 'command_started',
         {'command_id': cmd.id, 'capability': capabilityName, 'arguments': arguments});
@@ -248,7 +285,7 @@ class Run {
       'approval_id': request.id,
       'command_id': command.id,
       'reason': reason,
-      'effects': [for (final e in effects) {'kind': e.kind, 'resource': e.resource}],
+      'effects': [for (final e in effects) e.toDict()],
       'policy_revision': policyRevision,
       'expires_at': expiresAt,
     });
@@ -280,7 +317,6 @@ class Run {
       throw ArgumentError("decision must be 'approved' or 'denied'");
     }
     request.resolution = decision;
-    request.resolvedAt = _nowSeconds();
     ledger.append(id, 'approval_resolved', {'approval_id': request.id, 'resolution': decision});
     pendingApproval = null;
     lastResolvedApproval = request;
@@ -335,102 +371,33 @@ class Run {
         'session_id': sessionId,
         'state': state,
         'result': result,
-        'commands': {
-          for (final entry in commands.entries)
-            entry.key: {
-              'capability_name': entry.value.capabilityName,
-              'arguments': entry.value.arguments,
-              'retry_safety': entry.value.retrySafety,
-              'outcome': entry.value.outcome,
-              'attempts': entry.value.attempts,
-              'result_ref': entry.value.resultRef,
-              'error': entry.value.error,
-            },
-        },
-        'pending_approval': pendingApproval == null
-            ? null
-            : {
-                'id': pendingApproval!.id,
-                'command_id': pendingApproval!.commandId,
-                'reason': pendingApproval!.reason,
-                'effects': [
-                  for (final e in pendingApproval!.effects)
-                    {'kind': e.kind, 'resource': e.resource},
-                ],
-                'policy_revision': pendingApproval!.policyRevision,
-                'expires_at': pendingApproval!.expiresAt,
-              },
-        'pending_question': pendingQuestion?.toMap(),
-        'pending_calls': [
-          for (final c in pendingCalls)
-            {'id': c.id, 'name': c.name, 'arguments': c.arguments, 'raw_arguments': c.rawArguments},
-        ],
-        'last_resolved_approval': lastResolvedApproval == null
-            ? null
-            : {
-                'id': lastResolvedApproval!.id,
-                'command_id': lastResolvedApproval!.commandId,
-                'resolution': lastResolvedApproval!.resolution,
-              },
+        'commands': {for (final c in commands.values) c.id: c.toDict()},
+        'pending_approval': pendingApproval?.toDict(),
+        'pending_question': pendingQuestion?.toDict(),
+        'pending_calls': [for (final c in pendingCalls) c.toDict()],
+        'last_resolved_approval': lastResolvedApproval?.toDict(),
       };
 
   factory Run.fromSnapshotState(String runId, EventLedger ledger, Map<String, Object?> state) {
+    Map<String, Object?>? record(String key) => (state[key] as Map?)?.cast<String, Object?>();
+
     final run = Run(runId, state['session_id'] as String, ledger);
     run.state = state['state'] as String;
     run.result = state['result'];
-    final commandsMap = (state['commands'] as Map?)?.cast<String, Object?>() ?? {};
-    for (final entry in commandsMap.entries) {
-      final c = (entry.value as Map).cast<String, Object?>();
-      run.commands[entry.key] = Command(
-        id: entry.key,
-        capabilityName: c['capability_name'] as String,
-        arguments: (c['arguments'] as Map).cast<String, Object?>(),
-        retrySafety: c['retry_safety'] as String,
-        outcome: c['outcome'] as String,
-        attempts: (c['attempts'] as num).toInt(),
-        resultRef: c['result_ref'] as String?,
-        error: c['error'] as String?,
-      );
+    for (final c in (record('commands') ?? {}).values) {
+      final command = Command.fromDict((c as Map).cast<String, Object?>());
+      run.commands[command.id] = command;
     }
-    final pa = (state['pending_approval'] as Map?)?.cast<String, Object?>();
-    if (pa != null) {
-      run.pendingApproval = ApprovalRequest(
-        id: pa['id'] as String,
-        commandId: pa['command_id'] as String,
-        effects: [
-          for (final e in (pa['effects'] as List))
-            Effect(
-              kind: (e as Map)['kind'] as String,
-              resource: e['resource'] as String,
-            ),
-        ],
-        reason: pa['reason'] as String,
-        policyRevision: (pa['policy_revision'] as num).toInt(),
-        expiresAt: (pa['expires_at'] as num?)?.toDouble(),
-      );
-    }
-    final pq = (state['pending_question'] as Map?)?.cast<String, Object?>();
-    if (pq != null) run.pendingQuestion = PendingQuestion.fromMap(pq);
+    final pa = record('pending_approval');
+    if (pa != null) run.pendingApproval = ApprovalRequest.fromDict(pa);
+    final pq = record('pending_question');
+    if (pq != null) run.pendingQuestion = PendingQuestion.fromDict(pq);
     run.pendingCalls = [
       for (final c in (state['pending_calls'] as List? ?? []))
-        ToolCall(
-          id: (c as Map)['id'] as String,
-          name: c['name'] as String,
-          arguments: (c['arguments'] as Map).cast<String, Object?>(),
-          rawArguments: c['raw_arguments'] as String?,
-        ),
+        ToolCall.fromDict((c as Map).cast<String, Object?>()),
     ];
-    final lra = (state['last_resolved_approval'] as Map?)?.cast<String, Object?>();
-    if (lra != null) {
-      run.lastResolvedApproval = ApprovalRequest(
-        id: lra['id'] as String,
-        commandId: lra['command_id'] as String,
-        effects: [],
-        reason: '',
-        policyRevision: 0,
-        resolution: lra['resolution'] as String?,
-      );
-    }
+    final lra = record('last_resolved_approval');
+    if (lra != null) run.lastResolvedApproval = ApprovalRequest.fromDict(lra);
     return run;
   }
 }

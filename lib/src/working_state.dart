@@ -1,18 +1,16 @@
 /// Structured working state: a finite, typed record of what the agent knows
-/// and has decided, replacing an unbounded stack of free-text summaries.
+/// and has decided, rather than an unbounded stack of free-text summaries.
 ///
-/// The old summary contract asked an LLM to write prose that "preserves
-/// reasons" and hoped later re-folds wouldn't lose them. Prose has no
-/// schema, so nothing enforced that promise — a decision's reason was
-/// exactly as likely to survive a second fold as any other sentence, which
-/// is to say: not reliably. [WorkingState] makes the shape the promise:
-/// decisions are `(text, reason)` pairs in a list, not sentences buried in a
-/// paragraph, so folding *appends* to a field instead of re-summarizing a
-/// summary.
+/// Prose has no schema: a summary asked to "preserve reasons" keeps a
+/// decision's reason exactly as reliably as any other sentence survives a
+/// second fold, which is to say not reliably. [WorkingState] makes the shape
+/// the promise: decisions are `(text, reason)` pairs in a list, not
+/// sentences buried in a paragraph, so folding *appends* to a field instead
+/// of re-summarizing a summary.
 ///
 /// The original conversation text is never lost either way — it stays in
 /// the Event Ledger (`user_input`/`model_response`/`command_*` events) and
-/// is reachable via the `search_history` capability even after being folded
+/// is reachable via `meta.history.search` even after being folded
 /// out of the live projection.
 library;
 
@@ -68,8 +66,8 @@ class WorkingState {
   final List<String> artifactRefs;
   // Free-form escape hatch for application-specific state (game flags,
   // domain variables) that doesn't fit the fixed fields above. Editors of
-  // `extra` are the same three as before: user code, the LLM (via the
-  // state.extra.* capabilities), and the session seed.
+  // `extra` are user code, the LLM (via the state.extra.* capabilities) and
+  // the session seed.
   final Map<String, Object?> extra;
   ChecklistStore checklists;
   // Ledger sequence up to which history has been folded into this state by
@@ -119,41 +117,26 @@ class WorkingState {
       );
 
   String render({int maxTokens = 800}) {
-    final parts = <String>[];
-    if (goal.isNotEmpty) parts.add('goal: $goal');
-    if (acceptanceCriteria.isNotEmpty) {
-      parts.add('acceptance_criteria:\n${acceptanceCriteria.map((c) => '- $c').join('\n')}');
+    final parts = <String>[if (goal.isNotEmpty) 'goal: $goal'];
+    void bullets(String name, Iterable<String> lines) {
+      if (lines.isNotEmpty) parts.add('$name:\n${lines.map((line) => '- $line').join('\n')}');
     }
-    if (constraints.isNotEmpty) {
-      parts.add('constraints:\n${constraints.map((c) => '- $c').join('\n')}');
-    }
-    if (confirmedFacts.isNotEmpty) {
-      parts.add('confirmed_facts:\n${confirmedFacts.map((c) => '- $c').join('\n')}');
-    }
-    if (decisions.isNotEmpty) {
-      parts.add('decisions:\n${decisions.map((d) => '- ${d.text}${d.reason.isNotEmpty ? ' (because: ${d.reason})' : ''}').join('\n')}');
-    }
-    if (openQuestions.isNotEmpty) {
-      parts.add('open_questions:\n${openQuestions.map((q) => '- $q').join('\n')}');
-    }
-    if (nextActions.isNotEmpty) {
-      parts.add('next_actions:\n${nextActions.map((a) => '- $a').join('\n')}');
-    }
+
+    bullets('acceptance_criteria', acceptanceCriteria);
+    bullets('constraints', constraints);
+    bullets('confirmed_facts', confirmedFacts);
+    bullets('decisions', [
+      for (final d in decisions) '${d.text}${d.reason.isNotEmpty ? ' (because: ${d.reason})' : ''}',
+    ]);
+    bullets('open_questions', openQuestions);
+    bullets('next_actions', nextActions);
     if (artifactRefs.isNotEmpty) {
       parts.add('artifact_refs: ${artifactRefs.join(', ')}');
     }
     if (extra.isNotEmpty) {
       parts.add('extra: ${dumps(extra)}');
     }
-    var body = parts.join('\n');
-    if (estimateTokens(body) > maxTokens) {
-      // Truncate the least time-critical sections first: facts, then
-      // decisions, keeping goal/constraints/open_questions/next_actions
-      // (the parts most load-bearing for not losing the thread).
-      final cutoff = maxTokens * 4;
-      body = body.length > cutoff ? body.substring(0, cutoff) : body;
-    }
-    return body;
+    return truncateToTokens(parts.join('\n'), maxTokens);
   }
 }
 

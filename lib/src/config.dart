@@ -32,7 +32,7 @@ class ProjectionConfig {
   // description a second time.
   bool dedupeCandidateCardsAgainstSchemas;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'sections': sections,
         'window_tokens': windowTokens,
         'reserved_output_tokens': reservedOutputTokens,
@@ -58,7 +58,7 @@ class DiscoveryConfig {
   int activeTools;
   List<String> querySources;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'vector': vector,
         'k': k,
         'toc': toc,
@@ -82,7 +82,7 @@ class CompressionConfig {
   int compressedMaxLines;
   int observationMaxLines;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'full_window': fullWindow,
         'compressed_window': compressedWindow,
         'summary_window': summaryWindow,
@@ -109,7 +109,7 @@ class BudgetConfig {
   double costPer1kInput;
   double costPer1kOutput;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'max_steps': maxSteps,
         'max_tokens': maxTokens,
         'max_cost': maxCost,
@@ -132,7 +132,7 @@ class ArtifactsConfig {
   // directory (namespaced by run id) so a resumed run can recover them.
   String? directory;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'inline_threshold_tokens': inlineThresholdTokens,
         'preview_tokens': previewTokens,
         'directory': directory,
@@ -160,7 +160,7 @@ class LimitsConfig {
   int maxRepeats;
   int repeatWindow;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'max_validation_retries': maxValidationRetries,
         'max_idle_turns': maxIdleTurns,
         'approval_expires_s': approvalExpiresS,
@@ -178,7 +178,7 @@ class PersistenceConfig {
   // ledger in-memory only (no cross-process resume).
   String? ledgerDirectory;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'ledger_directory': ledgerDirectory,
       };
 }
@@ -191,7 +191,7 @@ class CompactionConfig {
   // 0 disables compaction; deterministic compression always stays on.
   double triggerRatio;
 
-  Map<String, Object?> toMap() => {'trigger_ratio': triggerRatio};
+  Map<String, Object?> toDict() => {'trigger_ratio': triggerRatio};
 }
 
 class Config {
@@ -228,38 +228,22 @@ class Config {
   final PersistenceConfig persistence;
   final CompactionConfig compaction;
 
-  static const Set<String> _topLevelKeys = {
-    'mode',
-    'result_schema',
-    'compaction',
-    'projection',
-    'discovery',
-    'compression',
-    'budget',
-    'artifacts',
-    'limits',
-    'persistence',
-  };
-
-  factory Config.fromMap(Map<String, Object?> data) {
+  factory Config.fromDict(Map<String, Object?> data) {
     final cfg = Config();
     for (final entry in data.entries) {
       final key = entry.key;
       final value = entry.value;
-      if (!_topLevelKeys.contains(key)) {
-        throw ArgumentError('Unknown config key: "$key"');
-      }
       switch (key) {
         case 'mode':
           cfg.mode = value as String;
         case 'result_schema':
           cfg.resultSchema = (value as Map?)?.cast<String, Object?>();
         case 'compaction':
-          _applySub(cfg.compaction, value, key, {
+          _applySub(value, key, {
             'trigger_ratio': (v) => cfg.compaction.triggerRatio = (v as num).toDouble(),
           });
         case 'projection':
-          _applySub(cfg.projection, value, key, {
+          _applySub(value, key, {
             'sections': (v) => cfg.projection.sections = (v as List).cast<String>(),
             'window_tokens': (v) => cfg.projection.windowTokens = (v as num).toInt(),
             'reserved_output_tokens': (v) =>
@@ -270,7 +254,7 @@ class Config {
                 cfg.projection.dedupeCandidateCardsAgainstSchemas = v as bool,
           });
         case 'discovery':
-          _applySub(cfg.discovery, value, key, {
+          _applySub(value, key, {
             'vector': (v) => cfg.discovery.vector = v as String,
             'k': (v) => cfg.discovery.k = (v as num).toInt(),
             'toc': (v) => cfg.discovery.toc = v as bool,
@@ -279,7 +263,7 @@ class Config {
                 cfg.discovery.querySources = (v as List).cast<String>(),
           });
         case 'compression':
-          _applySub(cfg.compression, value, key, {
+          _applySub(value, key, {
             'full_window': (v) => cfg.compression.fullWindow = (v as num).toInt(),
             'compressed_window': (v) => cfg.compression.compressedWindow = (v as num).toInt(),
             'summary_window': (v) => cfg.compression.summaryWindow = (v as num).toInt(),
@@ -287,7 +271,7 @@ class Config {
             'observation_max_lines': (v) => cfg.compression.observationMaxLines = (v as num).toInt(),
           });
         case 'budget':
-          _applySub(cfg.budget, value, key, {
+          _applySub(value, key, {
             'max_steps': (v) => cfg.budget.maxSteps = (v as num?)?.toInt(),
             'max_tokens': (v) => cfg.budget.maxTokens = (v as num?)?.toInt(),
             'max_cost': (v) => cfg.budget.maxCost = (v as num?)?.toDouble(),
@@ -296,14 +280,14 @@ class Config {
             'cost_per_1k_output': (v) => cfg.budget.costPer1kOutput = (v as num).toDouble(),
           });
         case 'artifacts':
-          _applySub(cfg.artifacts, value, key, {
+          _applySub(value, key, {
             'inline_threshold_tokens': (v) =>
                 cfg.artifacts.inlineThresholdTokens = (v as num).toInt(),
             'preview_tokens': (v) => cfg.artifacts.previewTokens = (v as num).toInt(),
             'directory': (v) => cfg.artifacts.directory = v as String?,
           });
         case 'limits':
-          _applySub(cfg.limits, value, key, {
+          _applySub(value, key, {
             'max_validation_retries': (v) =>
                 cfg.limits.maxValidationRetries = (v as num).toInt(),
             'max_idle_turns': (v) => cfg.limits.maxIdleTurns = (v as num).toInt(),
@@ -313,15 +297,17 @@ class Config {
             'repeat_window': (v) => cfg.limits.repeatWindow = (v as num).toInt(),
           });
         case 'persistence':
-          _applySub(cfg.persistence, value, key, {
+          _applySub(value, key, {
             'ledger_directory': (v) => cfg.persistence.ledgerDirectory = v as String?,
           });
+        default:
+          throw ArgumentError('Unknown config key: "$key"');
       }
     }
     return cfg;
   }
 
-  static void _applySub(Object current, Object? value, String key,
+  static void _applySub(Object? value, String key,
       Map<String, void Function(Object?)> setters) {
     if (value is! Map) {
       throw ArgumentError('Config key "$key" expects a map');
@@ -335,16 +321,16 @@ class Config {
     }
   }
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toDict() => {
         'mode': mode,
         'result_schema': resultSchema,
-        'compaction': compaction.toMap(),
-        'projection': projection.toMap(),
-        'discovery': discovery.toMap(),
-        'compression': compression.toMap(),
-        'budget': budget.toMap(),
-        'artifacts': artifacts.toMap(),
-        'limits': limits.toMap(),
-        'persistence': persistence.toMap(),
+        'compaction': compaction.toDict(),
+        'projection': projection.toDict(),
+        'discovery': discovery.toDict(),
+        'compression': compression.toDict(),
+        'budget': budget.toDict(),
+        'artifacts': artifacts.toDict(),
+        'limits': limits.toDict(),
+        'persistence': persistence.toDict(),
       };
 }

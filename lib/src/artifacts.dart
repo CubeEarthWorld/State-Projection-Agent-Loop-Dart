@@ -12,9 +12,7 @@
 /// untouched.
 ///
 /// Artifacts are namespaced by run so a sub-agent (or a resumed run) can
-/// never address another run's data by guessing an id; a parent must
-/// explicitly [ArtifactStore.move] a child artifact into its own namespace
-/// to receive it.
+/// never address another run's data by guessing an id.
 library;
 
 import 'dart:convert';
@@ -51,21 +49,6 @@ bool isRef(Object? value) =>
 
 Map<String, String> ref(String artifactId) => {refKey: artifactId};
 
-String truncateToTokens(String text, int maxTokens) {
-  if (estimateTokens(text) <= maxTokens) return text;
-  var lo = 0;
-  var hi = text.length;
-  while (lo < hi) {
-    final mid = (lo + hi + 1) ~/ 2;
-    if (estimateTokens(text.substring(0, mid)) <= maxTokens) {
-      lo = mid;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return text.substring(0, lo);
-}
-
 class ArtifactRecord {
   ArtifactRecord({
     required this.id,
@@ -96,6 +79,41 @@ class ArtifactRecord {
     if (v is Map) return '${v.length} keys';
     return '${text.length} chars';
   }
+
+  Map<String, Object?> toPayload() => {
+        'id': id,
+        'run_id': runId,
+        'type_name': typeName,
+        'source': source,
+        'created': created,
+        'text': text,
+      };
+
+  /// Only the serialized text is persisted; anything that was not a string
+  /// is parsed back, so a handler resolving the reference gets the map it
+  /// stored rather than its JSON.
+  factory ArtifactRecord.fromPayload(Map<String, Object?> payload) {
+    final text = payload['text'] as String;
+    final typeName = (payload['type_name'] as String?) ?? 'str';
+    Object? value = text;
+    if (typeName != 'str') {
+      try {
+        value = jsonDecode(text);
+      } on FormatException {
+        // serialized with toString(): the text is all there is
+      }
+    }
+    return ArtifactRecord(
+      id: payload['id'] as String,
+      runId: payload['run_id'] as String,
+      value: value,
+      text: text,
+      typeName: typeName,
+      tokens: estimateTokens(text),
+      source: (payload['source'] as String?) ?? '',
+      created: (payload['created'] as num?)?.toDouble(),
+    );
+  }
 }
 
 String _typeNameOf(Object? value) {
@@ -109,8 +127,8 @@ String _typeNameOf(Object? value) {
   return value.runtimeType.toString();
 }
 
-/// Namespaced by `runId`: artifacts from one run are invisible to another
-/// unless explicitly moved. Optionally persists to
+/// Namespaced by `runId`: artifacts from one run are invisible to another.
+/// Optionally persists to
 /// `directory/<run_id>/<artifact_id>.json` so a resumed run can recover
 /// large payloads that never made it into the ledger body.
 class ArtifactStore {
@@ -137,64 +155,36 @@ class ArtifactStore {
     return record;
   }
 
+  File _file(Directory dir, String aid) => File('${dir.path}/$runId/$aid.json');
+
   void _persist(ArtifactRecord record) {
     final dir = directory;
     if (dir == null) return;
-    final runDir = Directory('${dir.path}/$runId');
-    runDir.createSync(recursive: true);
-    final payload = {
-      'id': record.id,
-      'run_id': record.runId,
-      'type_name': record.typeName,
-      'source': record.source,
-      'created': record.created,
-      'text': record.text,
-    };
-    File('${runDir.path}/${record.id}.json')
-        .writeAsStringSync(dumps(payload), encoding: utf8);
+    _file(dir, record.id)
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync(dumps(record.toPayload()), encoding: utf8);
   }
 
-  /// Recover a persisted record written by an earlier process.
-  ///
-  /// Only the serialized text survives a restart, so the recovered value is
-  /// that text — enough for meta.artifact.peek, which is the whole point of
-  /// persisting: a resumed run can still inspect a payload that was too
-  /// large to keep in the ledger body.
-  ArtifactRecord? _load(String aid) {
+  /// The record, recovered from disk when an earlier process wrote it: a
+  /// resumed run can still read a payload that was too large to keep in the
+  /// ledger body.
+  ArtifactRecord? _find(String aid) {
+    final known = _records[aid];
     final dir = directory;
-    if (dir == null) return null;
-    final file = File('${dir.path}/$runId/$aid.json');
-    if (!file.existsSync()) return null;
-    final payload = (jsonDecode(file.readAsStringSync()) as Map).cast<String, Object?>();
-    final text = payload['text'] as String;
-    final record = ArtifactRecord(
-      id: payload['id'] as String,
-      runId: payload['run_id'] as String,
-      value: text,
-      text: text,
-      typeName: (payload['type_name'] as String?) ?? 'String',
-      tokens: estimateTokens(text),
-      source: (payload['source'] as String?) ?? '',
-      created: (payload['created'] as num?)?.toDouble(),
-    );
-    _records[aid] = record;
-    return record;
+    if (known != null || dir == null || !_file(dir, aid).existsSync()) return known;
+    final payload = (jsonDecode(_file(dir, aid).readAsStringSync()) as Map).cast<String, Object?>();
+    return _records[aid] = ArtifactRecord.fromPayload(payload);
   }
 
   ArtifactRecord getRecord(String aid) {
-    final record = _records[aid] ?? _load(aid);
+    final record = _find(aid);
     if (record == null) throw ArgumentError('Unknown artifact "$aid"');
     return record;
   }
 
   Object? get(String aid) => getRecord(aid).value;
 
-  bool exists(String aid) => _records.containsKey(aid) || _load(aid) != null;
-
-  /// Explicitly import a record from another store's namespace into this
-  /// one (spawn child -> parent handoff).
-  ArtifactRecord move(ArtifactRecord record, {String source = ''}) =>
-      put(record.value, source: source.isNotEmpty ? source : record.source);
+  bool exists(String aid) => _find(aid) != null;
 
   /// Projection form of an artifact: id + type + size + preview.
   String refText(ArtifactRecord record,

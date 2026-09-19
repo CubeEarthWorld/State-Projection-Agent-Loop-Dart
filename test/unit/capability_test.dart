@@ -4,7 +4,7 @@
 // SKIPPED: Python's TestDecorator (`@capability` decorator / bare-function
 // introspection via `inspect.signature`) and `build_capability_from_function`
 // have no Dart equivalent (see lib/src/capability.dart library doc) — those
-// scenarios are ported below using `Capability.fromMap` with an explicit
+// scenarios are ported below using `Capability.fromDict` with an explicit
 // map + handler instead, which is the only construction path in this port.
 import 'package:state_projection_loop/state_projection_loop.dart';
 import 'package:test/test.dart';
@@ -82,7 +82,7 @@ void main() {
 
   group('MapConstruction (replaces decorator tests)', () {
     test('ctx handler excludes ctx from schema, keeps declared params', () {
-      final cap = Capability.fromMap(
+      final cap = Capability.fromDict(
         {
           'name': 'demo.op',
           'spec': {
@@ -106,7 +106,7 @@ void main() {
     });
 
     test('effects and execution options round-trip', () {
-      final cap = Capability.fromMap(
+      final cap = Capability.fromDict(
         {
           'name': 'demo.write',
           'execution': {'retry_safety': 'idempotent', 'timeout_s': 5.0},
@@ -126,7 +126,7 @@ void main() {
 
   group('Projections', () {
     test('card and spec text', () {
-      final cap = Capability.fromMap(
+      final cap = Capability.fromDict(
         {
           'name': 'demo.read',
           'card': {'summary': 'reads a thing'},
@@ -138,7 +138,7 @@ void main() {
     });
 
     test('api schema shape', () {
-      final cap = Capability.fromMap(
+      final cap = Capability.fromDict(
         {'name': 'demo.op'},
         handler: (Map<String, Object?> args) => args['x'],
       );

@@ -128,6 +128,11 @@ class Rule {
   final ArgPredicate? argPredicate;
   final String reason;
 
+  /// Matches every call: the layer's fallback, consulted after every rule
+  /// that names something (see `PolicyEngine._matchLayer`).
+  bool get isCatchAll =>
+      capabilityPattern == '*' && effectKind == null && resourcePattern == '*' && argPredicate == null;
+
   bool matches(Capability capability, Effect effect, Map<String, Object?> arguments) {
     if (!globMatch(capability.name, capabilityPattern)) return false;
     if (effectKind != null && effect.kind != effectKind) return false;
@@ -137,20 +142,16 @@ class Rule {
   }
 }
 
-typedef PerEffectEntry = (Effect, String, String); // (effect, decision, layer)
-
 class PolicyDecision {
   PolicyDecision({
     required this.decision,
     required this.reason,
     this.layer = '',
-    List<PerEffectEntry>? perEffect,
-  }) : perEffect = perEffect ?? <PerEffectEntry>[];
+  });
 
   final String decision;
   final String reason;
   final String layer;
-  final List<PerEffectEntry> perEffect;
 }
 
 typedef PolicyChangeListener = void Function(String description);
@@ -215,70 +216,10 @@ class PolicyEngine {
   }
 
   void applyPreset(String preset, {String layer = 'workspace'}) {
-    if (!presets.contains(preset)) {
-      throw ArgumentError('Unknown preset "$preset"; expected one of $presets');
-    }
+    final rules = _presetRules(preset);
     clearLayer(layer);
-    if (preset == 'auto_safe' || preset == 'auto_workspace_dev') {
-      // Writes confined to the session's own working state never leave the
-      // process, so they are auto-allowed; they are declared as writes so
-      // the runtime keeps them in the model's stated order.
-      addRule(layer, Rule(decision: 'allow', capabilityPattern: 'planning.checklist.manage',
-          effectKind: 'write', resourcePattern: 'working_state:checklists', reason: 'preset:local_checklists'));
-      addRule(layer, Rule(decision: 'allow', capabilityPattern: 'meta.user.ask',
-          effectKind: 'external', resourcePattern: 'user:*', reason: 'preset:ask_user'));
-      addRule(layer, Rule(decision: 'allow', capabilityPattern: 'state.*',
-          effectKind: 'write', resourcePattern: 'working_state:*', reason: 'preset:local_working_state'));
-    }
-    switch (preset) {
-      case 'deny_all':
-        addRule(layer, Rule(decision: 'deny', reason: 'preset:deny_all'));
-      case 'approve_all_effects':
-        addRule(
-            layer,
-            Rule(
-                decision: 'allow',
-                effectKind: 'none',
-                reason: 'preset:approve_all_effects'));
-        addRule(
-            layer,
-            Rule(decision: 'require_approval', reason: 'preset:approve_all_effects'));
-      case 'auto_safe':
-        addRule(layer,
-            Rule(decision: 'allow', effectKind: 'none', reason: 'preset:auto_safe'));
-        addRule(
-          layer,
-          Rule(
-              decision: 'allow',
-              effectKind: 'read',
-              resourcePattern: 'workspace:*',
-              reason: 'preset:auto_safe'),
-        );
-        addRule(layer, Rule(decision: 'require_approval', reason: 'preset:auto_safe'));
-      case 'auto_workspace_dev':
-        addRule(
-            layer,
-            Rule(
-                decision: 'allow',
-                effectKind: 'none',
-                reason: 'preset:auto_workspace_dev'));
-        addRule(
-          layer,
-          Rule(
-              decision: 'allow',
-              resourcePattern: 'workspace:*',
-              reason: 'preset:auto_workspace_dev'),
-        );
-        addRule(
-          layer,
-          Rule(
-              decision: 'allow',
-              resourcePattern: 'sandbox:*',
-              reason: 'preset:auto_workspace_dev'),
-        );
-        addRule(
-            layer,
-            Rule(decision: 'require_approval', reason: 'preset:auto_workspace_dev'));
+    for (final rule in rules) {
+      addRule(layer, rule);
     }
   }
 
@@ -292,12 +233,14 @@ class PolicyEngine {
 
   // -- evaluation -----------------------------------------------------------
 
+  /// The first matching rule in the layer. A rule that matches everything (a
+  /// preset's closing `require_approval`) is the layer's fallback and is
+  /// consulted last, so a grant added after `applyPreset` on the same layer
+  /// takes effect instead of being shadowed by it.
   Rule? _matchLayer(
       String layer, Capability capability, Effect effect, Map<String, Object?> arguments) {
-    for (final rule in layers[layer]!) {
-      if (rule.matches(capability, effect, arguments)) return rule;
-    }
-    return null;
+    final matched = [for (final rule in layers[layer]!) if (rule.matches(capability, effect, arguments)) rule];
+    return matched.where((rule) => !rule.isCatchAll).firstOrNull ?? matched.firstOrNull;
   }
 
   (String, String, String) _evaluateEffect(
@@ -334,21 +277,12 @@ class PolicyEngine {
   }
 
   PolicyDecision evaluate(Capability capability, Map<String, Object?> arguments) {
-    // A capability that declares no effects at all is NOT assumed safe —
-    // that would reward an author who simply forgot to declare effects with
-    // maximum trust. Treat undeclared effects as the most restrictive kind
-    // so the default posture stays conservative.
-    final effects = capability.effects.isNotEmpty
-        ? capability.effects
-        : [Effect(kind: 'external', resource: 'undeclared:*')];
-    final perEffect = <PerEffectEntry>[];
     var worstDecision = 'allow';
     var worstLayer = 'default';
     var worstReason = 'no effects';
     var worstSeverity = 0;
-    for (final effect in effects) {
+    for (final effect in capability.plannedEffects) {
       final (decision, layer, reason) = _evaluateEffect(capability, effect, arguments);
-      perEffect.add((effect, decision, layer));
       final severity = _severity[decision]!;
       if (severity > worstSeverity) {
         worstDecision = decision;
@@ -357,8 +291,44 @@ class PolicyEngine {
         worstSeverity = severity;
       }
     }
-    return PolicyDecision(
-        decision: worstDecision, reason: worstReason, layer: worstLayer, perEffect: perEffect);
+    return PolicyDecision(decision: worstDecision, reason: worstReason, layer: worstLayer);
   }
 }
 
+/// The rules a preset installs, in order.
+List<Rule> _presetRules(String preset) {
+  Rule rule(String decision, {String? effectKind, String resourcePattern = '*'}) => Rule(
+      decision: decision,
+      effectKind: effectKind,
+      resourcePattern: resourcePattern,
+      reason: 'preset:$preset');
+  // Writes confined to the session's own working state never leave the
+  // process, so the auto presets allow them; they are declared as writes so
+  // the runtime keeps them in the model's stated order.
+  final localState = [
+    Rule(decision: 'allow', capabilityPattern: 'planning.checklist.manage',
+        effectKind: 'write', resourcePattern: 'working_state:checklists', reason: 'preset:local_checklists'),
+    Rule(decision: 'allow', capabilityPattern: 'meta.user.ask',
+        effectKind: 'external', resourcePattern: 'user:*', reason: 'preset:ask_user'),
+    Rule(decision: 'allow', capabilityPattern: 'state.*',
+        effectKind: 'write', resourcePattern: 'working_state:*', reason: 'preset:local_working_state'),
+  ];
+  return switch (preset) {
+    'deny_all' => [rule('deny')],
+    'approve_all_effects' => [rule('allow', effectKind: 'none'), rule('require_approval')],
+    'auto_safe' => [
+        ...localState,
+        rule('allow', effectKind: 'none'),
+        rule('allow', effectKind: 'read', resourcePattern: 'workspace:*'),
+        rule('require_approval'),
+      ],
+    'auto_workspace_dev' => [
+        ...localState,
+        rule('allow', effectKind: 'none'),
+        rule('allow', resourcePattern: 'workspace:*'),
+        rule('allow', resourcePattern: 'sandbox:*'),
+        rule('require_approval'),
+      ],
+    _ => throw ArgumentError('Unknown preset "$preset"; expected one of $presets'),
+  };
+}

@@ -7,7 +7,6 @@ import 'package:test/test.dart';
 
 import '../util.dart';
 
-PolicyEngine allowAll() => PolicyEngine(defaultDecision: 'allow');
 
 List<(String, String)> observations(Session s) => [
       for (final e in s.ledger.iterRun(s.run.id))
@@ -40,6 +39,36 @@ void main() {
       final types = session.ledger.iterRun(session.run.id).map((e) => e.type).toSet();
       expect(types, containsAll(['question_asked', 'question_answered']));
       expect(session.run.commands.values.single.outcome, 'ok');
+    });
+
+    test('calls parked behind a question still face the policy', () async {
+      final sent = <bool>[];
+      final registry = Registry();
+      registry.register(capabilityDict('mail.message.send', effects: [('external', 'smtp:*')]),
+          handler: (args) {
+        sent.add(true);
+        return 'sent';
+      });
+      final policy = PolicyEngine(defaultDecision: 'allow')
+        ..addRule('admin', Rule(decision: 'deny', capabilityPattern: 'mail.*'));
+      final session = Session(
+        ScriptedLLM([
+          DecisionStep(ScriptedLLM.calls([
+            ('meta.user.ask', {'question': 'Send it?'}),
+            ('mail.message.send', {}),
+          ])),
+          const TextStep('ok'),
+        ]),
+        registry: registry,
+        builtins: ['ask'],
+        policy: policy,
+      );
+      await session.send('mail the report');
+      session.answer('yes');
+      await session.resume();
+      expect(sent, isEmpty, reason: 'answering a question must not wave the next call past the policy');
+      expect(observations(session).firstWhere((o) => o.$1 == 'mail.message.send').$2,
+          startsWith('Denied by policy (admin): '));
     });
 
     test('the default policy lets the model ask without approval', () {
@@ -95,7 +124,7 @@ void main() {
         registry: reg(),
         policy: allowAll(),
         builtins: [],
-        config: Config.fromMap({'limits': {'max_repeats': 0}}),
+        config: Config.fromDict({'limits': {'max_repeats': 0}}),
       );
       await session.send('go');
       expect(observations(session).every((o) => o.$2 == 'same'), isTrue);
@@ -109,7 +138,7 @@ void main() {
           DecisionStep(ScriptedLLM.finish('oops')),
           DecisionStep(ScriptedLLM.finish({'answer': 42})),
         ]),
-        config: Config.fromMap({
+        config: Config.fromDict({
           'mode': 'job',
           'result_schema': {'type': 'object', 'required': ['answer']},
         }),
@@ -155,7 +184,7 @@ void main() {
           }),
           const TextStep('r4'),
         ]),
-        config: Config.fromMap({'compaction': {'trigger_ratio': 0.01}}),
+        config: Config.fromDict({'compaction': {'trigger_ratio': 0.01}}),
         policy: allowAll(),
       );
       await session.send('m1');
@@ -180,7 +209,7 @@ void main() {
           const TextStep('{"facts_add": "not a list"}'),
           const TextStep('r4'),
         ]),
-        config: Config.fromMap({'compaction': {'trigger_ratio': 0.01}}),
+        config: Config.fromDict({'compaction': {'trigger_ratio': 0.01}}),
         policy: allowAll(),
       );
       for (final m in ['m1', 'm2', 'm3', 'm4']) {

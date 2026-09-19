@@ -9,6 +9,7 @@ import 'dart:io';
 
 import '../capability.dart';
 import '../registry.dart';
+import 'builtin.dart' show install;
 import 'defs.g.dart';
 
 /// Install `filesystem.file.*` (and, with [shell], `shell.command.run`)
@@ -59,11 +60,8 @@ void installToolkits(Registry registry, Directory root, {bool shell = true}) {
     'filesystem.file.write': write,
     if (shell) 'shell.command.run': run,
   };
-  for (final def in load('toolkits') as List) {
-    final map = (def as Map).cast<String, Object?>();
-    final handler = handlers[map['name']];
-    if (handler != null && !registry.contains(map['name'] as String)) {
-      registry.register(map, handler: handler, replace: true);
-    }
-  }
+  install(registry, [
+    for (final def in load('toolkits') as List)
+      if (handlers.containsKey((def as Map)['name'])) def,
+  ], handlers);
 }

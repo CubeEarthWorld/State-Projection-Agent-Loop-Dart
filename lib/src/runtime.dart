@@ -28,7 +28,7 @@ library;
 
 import 'dart:async';
 
-import 'artifacts.dart' show ArtifactStore, serializeValue, truncateToTokens;
+import 'artifacts.dart' show ArtifactStore, serializeValue;
 import 'capability.dart';
 import 'compression.dart' show contentHash;
 import 'config.dart';
@@ -41,13 +41,11 @@ import 'run.dart';
 import 'serialization.dart';
 import 'tokens.dart';
 
-export 'json_schema.dart' show validateArgs, applyDefaults;
 
 // ---------------------------------------------------------------------------
 // Results
 // ---------------------------------------------------------------------------
 
-const List<String> outcomes = ['ok', 'failed', 'unknown', 'denied', 'waiting_approval', 'waiting_user'];
 
 /// Outcomes whose result arrives later (approval, answer): nothing is
 /// recorded for the call until then, so the decision stays out of the
@@ -57,23 +55,23 @@ const Set<String> waitingOutcomes = {'waiting_approval', 'waiting_user'};
 class ToolResult {
   ToolResult({
     required this.call,
-    required this.ok,
     this.value,
     this.error,
     this.observation = '',
     this.artifactId,
-    this.outcome = 'ok', // one of `outcomes`
+    this.outcome = 'ok', // ok | failed | unknown | denied | waiting_approval | waiting_user
     this.commandId,
   });
 
   final ToolCall call;
-  final bool ok;
   final Object? value;
   final String? error;
   final String observation;
   final String? artifactId;
   final String outcome;
   final String? commandId;
+
+  bool get ok => outcome == 'ok';
 }
 
 /// Result of one call to [Runtime.execute].
@@ -112,6 +110,22 @@ class BudgetState {
   double cost;
   final double started;
 
+  /// What a snapshot keeps. Not [started]: the wall clock restarts with the
+  /// process that resumes the run.
+  Map<String, Object?> toDict() => {
+        'steps': steps,
+        'prompt_tokens': promptTokens,
+        'completion_tokens': completionTokens,
+        'cost': cost,
+      };
+
+  factory BudgetState.fromDict(Map<String, Object?> d) => BudgetState(
+        steps: (d['steps'] as num?)?.toInt() ?? 0,
+        promptTokens: (d['prompt_tokens'] as num?)?.toInt() ?? 0,
+        completionTokens: (d['completion_tokens'] as num?)?.toInt() ?? 0,
+        cost: (d['cost'] as num?)?.toDouble() ?? 0.0,
+      );
+
   void noteUsage(int prompt, int completion, Config cfg) {
     promptTokens += prompt;
     completionTokens += completion;
@@ -119,10 +133,11 @@ class BudgetState {
     cost += prompt / 1000 * b.costPer1kInput + completion / 1000 * b.costPer1kOutput;
   }
 
-  /// Account one model turn: the adapter's reported usage when it has one,
-  /// otherwise an estimate from what was sent and what came back.
+  /// Account one model turn: a step, and the adapter's reported usage when it
+  /// has one, otherwise an estimate from what was sent and what came back.
   void noteDecision(
       Decision decision, List<Message> messages, List<Map<String, Object?>> apiTools, Config cfg) {
+    steps += 1;
     if (decision.usage != null) {
       noteUsage(decision.usage!.promptTokens, decision.usage!.completionTokens, cfg);
       return;
@@ -217,7 +232,6 @@ class Runtime {
     if (why == null) return null;
     return ToolResult(
       call: call,
-      ok: false,
       outcome: 'failed',
       error: 'loop_guard',
       observation: 'Loop guard: "${capability.name}" with these exact arguments $why. '
@@ -261,15 +275,9 @@ class Runtime {
 
     Future<void> flush() async {
       if (buffer.isEmpty) return;
-      if (buffer.length == 1) {
-        final (call, cap, args) = buffer[0];
-        results.add(await _run(cap, args, ctx, run, call));
-      } else {
-        final batch = await Future.wait([
-          for (final (call, cap, args) in buffer) _run(cap, args, ctx, run, call),
-        ]);
-        results.addAll(batch);
-      }
+      results.addAll(await Future.wait([
+        for (final (call, cap, args) in buffer) _run(cap, args, ctx, run, call),
+      ]));
       buffer.clear();
     }
 
@@ -293,7 +301,6 @@ class Runtime {
         await flush();
         results.add(ToolResult(
           call: call,
-          ok: false,
           outcome: 'denied',
           error: decision.reason,
           observation: 'Denied by policy (${decision.layer}): ${decision.reason}',
@@ -314,7 +321,6 @@ class Runtime {
         );
         results.add(ToolResult(
           call: call,
-          ok: false,
           outcome: 'waiting_approval',
           error: 'approval_required',
           observation: 'Approval required: ${decision.reason}',
@@ -337,9 +343,10 @@ class Runtime {
     return ExecuteBatchResult(results: results, halted: false);
   }
 
-  /// Continue a run's `pendingCalls` after its approval was resolved.
+  /// Continue a run's `pendingCalls` after its approval was resolved or its
+  /// question answered.
   ///
-  /// The first pending call already has a [Command] (created when approval
+  /// After an approval the first pending call already has a [Command] (created when approval
   /// was requested) and is executed directly, reusing its `commandId` — no
   /// re-validation, no re-authorization, so an approved command cannot
   /// silently get a different idempotency key on retry. The remaining calls
@@ -369,7 +376,6 @@ class Runtime {
         results: [
           ToolResult(
             call: firstCall,
-            ok: false,
             outcome: 'denied',
             error: 'approval_denied',
             observation: 'Approval denied: $deniedName was not executed.',
@@ -378,7 +384,6 @@ class Runtime {
           for (final call in rest)
             ToolResult(
               call: call,
-              ok: false,
               outcome: 'denied',
               error: 'approval_denied',
               observation: 'Not executed: the approval for $deniedName was denied.',
@@ -387,29 +392,30 @@ class Runtime {
         halted: false,
       );
     }
-    final capability =
-        approved != null ? registry.get(approved.capabilityName) : registry.get(firstCall.name);
+    run.pendingCalls = [];
+    if (approved == null) {
+      // Parked behind a question, not an approval: nothing here was checked
+      // yet, so every call takes the normal path.
+      return execute(pending, ctx, run, policy);
+    }
+    final capability = registry.get(approved.capabilityName);
     final results = <ToolResult>[];
     if (capability == null) {
       results.add(ToolResult(
         call: firstCall,
-        ok: false,
         outcome: 'failed',
         error: 'unknown_capability',
         observation: 'Error: capability "${firstCall.name}" no longer registered.',
       ));
     } else {
-      final args = approved != null ? approved.arguments : firstCall.arguments;
-      results.add(await _run(capability, args, ctx, run, firstCall, command: approved));
+      results.add(await _run(capability, approved.arguments, ctx, run, firstCall, command: approved));
       if (results.last.outcome == 'waiting_user') {
         run.pendingCalls = pending.sublist(1);
         return ExecuteBatchResult(results: results, halted: true);
       }
     }
-    run.pendingCalls = [];
     final rest = await execute(pending.sublist(1), ctx, run, policy);
-    results.addAll(rest.results);
-    return ExecuteBatchResult(results: results, halted: rest.halted);
+    return ExecuteBatchResult(results: [...results, ...rest.results], halted: rest.halted);
   }
 
   // -- pre-checks: unknown capability / require_spec / validation ---------
@@ -426,7 +432,6 @@ class Runtime {
           : '';
       return ToolResult(
         call: call,
-        ok: false,
         outcome: 'failed',
         error: 'unknown_capability',
         observation: 'Error: capability "${call.name}" is not registered. '
@@ -441,7 +446,6 @@ class Runtime {
       seenSpecs.add(capability.name);
       return ToolResult(
         call: call,
-        ok: false,
         outcome: 'failed',
         error: 'require_spec',
         observation: 'Capability "${call.name}" requires its full spec to be reviewed before '
@@ -478,7 +482,6 @@ class Runtime {
       }
       return ToolResult(
         call: call,
-        ok: false,
         outcome: 'failed',
         error: 'validation: $error',
         observation: observation,
@@ -489,15 +492,8 @@ class Runtime {
     return (capability, args);
   }
 
-  static bool isReadOnly(Capability capability) {
-    // Mirrors PolicyEngine.evaluate: undeclared effects are treated as the
-    // most restrictive kind, so an author who forgot to declare effects
-    // doesn't also get free parallel execution.
-    final effects = capability.effects.isNotEmpty
-        ? capability.effects
-        : [Effect(kind: 'external', resource: 'undeclared:*')];
-    return effects.every((e) => e.kind == 'none' || e.kind == 'read');
-  }
+  static bool isReadOnly(Capability capability) =>
+      capability.plannedEffects.every((e) => e.kind == 'none' || e.kind == 'read');
 
   // -- execution ------------------------------------------------------------
 
@@ -517,7 +513,6 @@ class Runtime {
       run.recordOutcome(command, 'failed', error: 'no_handler');
       return ToolResult(
         call: call,
-        ok: false,
         outcome: 'failed',
         error: 'no_handler',
         commandId: command.id,
@@ -540,7 +535,6 @@ class Runtime {
           run.askQuestion(command, call.id, value);
           return ToolResult(
             call: call,
-            ok: false,
             outcome: 'waiting_user',
             error: 'question_pending',
             observation: 'Question pending: ${value.text}',
@@ -551,7 +545,6 @@ class Runtime {
         run.recordOutcome(command, 'ok', resultRef: artifactId);
         return ToolResult(
           call: call,
-          ok: true,
           value: value,
           outcome: 'ok',
           commandId: command.id,
@@ -578,7 +571,6 @@ class Runtime {
     final isUnknown = lastOutcome == 'unknown';
     return ToolResult(
       call: call,
-      ok: false,
       error: lastError,
       outcome: lastOutcome,
       commandId: command.id,

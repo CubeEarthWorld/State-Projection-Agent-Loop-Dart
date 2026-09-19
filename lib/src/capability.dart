@@ -16,7 +16,7 @@
 ///
 /// Unlike the Python original, this port has no runtime signature/docstring
 /// introspection (no `inspect`/`typing` equivalent in Dart): capabilities
-/// are always built via [Capability.fromMap] with an explicit handler and an
+/// are always built via [Capability.fromDict] with an explicit handler and an
 /// explicit `wantsCtx` flag, rather than derived from a decorated function.
 library;
 
@@ -59,6 +59,11 @@ class Effect {
 
   final String kind;
   final String resource;
+
+  Map<String, Object?> toDict() => {'kind': kind, 'resource': resource};
+
+  factory Effect.fromDict(Map<String, Object?> d) =>
+      Effect(kind: (d['kind'] as String?) ?? 'none', resource: (d['resource'] as String?) ?? '*');
 }
 
 class CapabilityCard {
@@ -67,7 +72,7 @@ class CapabilityCard {
 
   String summary;
 
-  /// Derived by [Capability.deriveCard]; never authored.
+  /// Derived from the name and parameters; never authored.
   String signature = '';
   final List<String> tags;
 }
@@ -260,6 +265,7 @@ class Capability {
         execution = execution ?? CapabilityExecution(),
         effects = effects ?? <Effect>[] {
     validateCapabilityName(name);
+    _deriveCard();
   }
 
   final String name;
@@ -277,13 +283,17 @@ class Capability {
   /// Provider-safe function name for native tool-calling schemas.
   String get apiName => toApiName(name);
 
-  /// Undeclared effects are NOT treated as pure — see `PolicyEngine.evaluate`
-  /// and `Runtime._isReadOnly` for the same conservative default.
+  /// The effects the policy engine and the runtime reason about. A
+  /// capability that declares none is NOT assumed safe — that would reward an
+  /// author who forgot to declare effects with maximum trust and free
+  /// parallel execution — so it counts as the most restrictive kind.
+  List<Effect> get plannedEffects =>
+      effects.isNotEmpty ? effects : [Effect(kind: 'external', resource: 'undeclared:*')];
 
   /// Build a [Capability] from a plain-map definition (the only
   /// construction path in this port — see the library note about dropped
   /// function introspection).
-  factory Capability.fromMap(
+  factory Capability.fromDict(
     Map<String, Object?> data, {
     Function? handler,
     bool wantsCtx = false,
@@ -354,12 +364,11 @@ class Capability {
       execution: execution,
       effects: effects,
     );
-    cap.deriveCard();
     cap.wantsCtx = wantsCtx;
     return cap;
   }
 
-  void deriveCard() {
+  void _deriveCard() {
     if (card.summary.isEmpty) {
       final s = _firstSentence(spec.description);
       card.summary = s.isEmpty ? name : s;
@@ -372,8 +381,7 @@ class Capability {
 
   /// ~30-token one-liner: enough to call the capability directly.
   String cardText() {
-    final sig = card.signature.isEmpty ? name : card.signature;
-    return '- $sig — ${card.summary}';
+    return '- ${card.signature} — ${card.summary}';
   }
 
   String specText() {

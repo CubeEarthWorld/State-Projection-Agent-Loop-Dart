@@ -60,7 +60,7 @@ void main() {
 
   test('shared wire fixture', () {
     final document =
-        jsonDecode(File('test/fixtures/checklists_v1.json').readAsStringSync())
+        jsonDecode(File('spec/fixtures/checklists_v1.json').readAsStringSync())
             as Map;
     final store = ChecklistStore.fromDict(document);
     expect(store.toDict(), document);
@@ -80,7 +80,7 @@ void main() {
   });
 
   test('projection budget never deletes plans', () async {
-    final cfg = Config.fromMap({
+    final cfg = Config.fromDict({
       'projection': {'window_tokens': 2000, 'reserved_output_tokens': 200}
     });
     final llm = ScriptedLLM([const TextStep('ok')]);
@@ -116,7 +116,7 @@ void main() {
     expect(Session(ScriptedLLM([])).checklists.isEmpty, true);
     final dir = Directory.systemTemp.createTempSync('checklist-test-');
     addTearDown(() => dir.deleteSync(recursive: true));
-    final cfg = Config.fromMap({
+    final cfg = Config.fromDict({
       'persistence': {'ledger_directory': dir.path}
     });
     final session = Session(
@@ -381,7 +381,7 @@ void main() {
   test('restart recovers after snapshot gap and keeps deletion', () async {
     final dir = Directory.systemTemp.createTempSync('checklist-test-');
     addTearDown(() => dir.deleteSync(recursive: true));
-    final cfg = Config.fromMap({
+    final cfg = Config.fromDict({
       'persistence': {'ledger_directory': dir.path}
     });
     final session = Session(ScriptedLLM([]), config: cfg);
@@ -409,7 +409,7 @@ void main() {
   test('completed run retains plans on restart', () async {
     final dir = Directory.systemTemp.createTempSync('checklist-test-');
     addTearDown(() => dir.deleteSync(recursive: true));
-    final cfg = Config.fromMap({
+    final cfg = Config.fromDict({
       'mode': 'job',
       'persistence': {'ledger_directory': dir.path}
     });
@@ -426,6 +426,25 @@ void main() {
         (restored.checklists.execute('get', {'id': value['id']})
             as Map)['name'],
         'retained');
+  });
+
+  test("a spawned child keeps the parent's deny-list", () async {
+    final seen = <List<Object?>>[];
+    final session = Session(
+      ScriptedLLM([]),
+      registry: Registry(disabled: ['planning.checklist.manage']),
+      builtins: ['meta', 'checklist', 'spawn'],
+      policy: PolicyEngine(defaultDecision: 'allow'),
+      spawnLlmFactory: (model) => ScriptedLLM([
+        CallbackStep((messages, tools) {
+          seen.add([for (final t in tools ?? const []) ((t as Map)['function'] as Map)['name']]);
+          return ScriptedLLM.finish('done');
+        }),
+      ]),
+    );
+    expect(await session.invoke('meta.agent.spawn', {'task': 'work'}), 'done');
+    expect(seen.single, contains('meta__tool__find'));
+    expect(seen.single, isNot(contains('planning__checklist__manage')));
   });
 
   test('branch, rewind and spawn do not share plans', () async {
