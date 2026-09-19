@@ -194,6 +194,20 @@ class CompactionConfig {
   Map<String, Object?> toDict() => {'trigger_ratio': triggerRatio};
 }
 
+/// One model call: how long to wait, how often to retry a failed call (any
+/// exception, including the timeout), and the pause between tries
+/// (multiplied by the attempt number). Every failed attempt is a
+/// `model_call_failed` ledger event; the last one also throws.
+class ModelConfig {
+  ModelConfig({this.timeoutS, this.retries = 0, this.backoffS = 1.0});
+
+  double? timeoutS;
+  int retries;
+  double backoffS;
+
+  Map<String, Object?> toDict() => {'timeout_s': timeoutS, 'retries': retries, 'backoff_s': backoffS};
+}
+
 class Config {
   Config({
     this.mode = 'chat', // "chat" | "job"
@@ -206,6 +220,7 @@ class Config {
     LimitsConfig? limits,
     PersistenceConfig? persistence,
     CompactionConfig? compaction,
+    ModelConfig? model,
   })  : projection = projection ?? ProjectionConfig(),
         discovery = discovery ?? DiscoveryConfig(),
         compression = compression ?? CompressionConfig(),
@@ -213,7 +228,8 @@ class Config {
         artifacts = artifacts ?? ArtifactsConfig(),
         limits = limits ?? LimitsConfig(),
         persistence = persistence ?? PersistenceConfig(),
-        compaction = compaction ?? CompactionConfig();
+        compaction = compaction ?? CompactionConfig(),
+        model = model ?? ModelConfig();
 
   String mode;
   // Job mode: JSON Schema finish(result) must satisfy; a failing result is
@@ -227,6 +243,7 @@ class Config {
   final LimitsConfig limits;
   final PersistenceConfig persistence;
   final CompactionConfig compaction;
+  final ModelConfig model;
 
   factory Config.fromDict(Map<String, Object?> data) {
     final cfg = Config();
@@ -241,6 +258,12 @@ class Config {
         case 'compaction':
           _applySub(value, key, {
             'trigger_ratio': (v) => cfg.compaction.triggerRatio = (v as num).toDouble(),
+          });
+        case 'model':
+          _applySub(value, key, {
+            'timeout_s': (v) => cfg.model.timeoutS = (v as num?)?.toDouble(),
+            'retries': (v) => cfg.model.retries = (v as num).toInt(),
+            'backoff_s': (v) => cfg.model.backoffS = (v as num).toDouble(),
           });
         case 'projection':
           _applySub(value, key, {
@@ -325,6 +348,7 @@ class Config {
         'mode': mode,
         'result_schema': resultSchema,
         'compaction': compaction.toDict(),
+        'model': model.toDict(),
         'projection': projection.toDict(),
         'discovery': discovery.toDict(),
         'compression': compression.toDict(),

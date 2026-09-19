@@ -45,7 +45,8 @@ class OpenAICompatAdapter implements LLMAdapter {
   }
 
   @override
-  Future<Decision> complete(List<Message> messages, [List<Map<String, Object?>>? tools]) async {
+  Future<Decision> complete(List<Message> messages,
+      [List<Map<String, Object?>>? tools, void Function(String text)? onDelta]) async {
     final body = <String, Object?>{
       'model': model,
       'messages': [for (final m in messages) _toApi(m)],

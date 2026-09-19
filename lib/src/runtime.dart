@@ -72,6 +72,15 @@ class ToolResult {
   final String? commandId;
 
   bool get ok => outcome == 'ok';
+
+  ToolResult withObservation(String observation) => ToolResult(
+      call: call,
+      value: value,
+      error: error,
+      observation: observation,
+      artifactId: artifactId,
+      outcome: outcome,
+      commandId: commandId);
 }
 
 /// Result of one call to [Runtime.execute].
@@ -176,15 +185,32 @@ class BudgetState {
 // Runtime
 // ---------------------------------------------------------------------------
 
+/// Host code around each tool call, run after policy has authorised it.
+///
+/// [beforeCall] may return replacement arguments (validated like the
+/// model's) or a String, which rejects the call with that text as the
+/// observation — a correctness gate like validation, not a second grant
+/// path: nothing a hook returns can allow a denied call. [afterCall] may
+/// return a replacement observation (redaction, an attached diff). Every
+/// intervention is a `hook_intervened` ledger event.
+class Hooks {
+  const Hooks({this.beforeCall, this.afterCall});
+
+  final Object? Function(Capability capability, Map<String, Object?> args, ToolContext ctx)? beforeCall;
+  final Object? Function(
+      Capability capability, Map<String, Object?> args, ToolResult result, ToolContext ctx)? afterCall;
+}
+
 class Runtime {
   // No artifact store of its own: it uses ctx.store, the session's current
   // one. A resumed run installs a fresh store for its new run id, and a
   // second copy captured here would silently keep writing artifacts the
   // session (and therefore meta.artifact.peek) could no longer read.
-  Runtime(this.registry, this.config);
+  Runtime(this.registry, this.config, {this.hooks = const Hooks()});
 
   final Registry registry;
   final Config config;
+  final Hooks hooks;
 
   // Capabilities whose full spec has already been projected into the
   // conversation. Used by the require_spec gate; pinned capabilities are
@@ -519,6 +545,53 @@ class Runtime {
         observation: 'Error: capability "${capability.name}" has no executable handler registered.',
       );
     }
+    final before = hooks.beforeCall;
+    if (before != null) {
+      var verdict = before(capability, args, callCtx);
+      if (verdict is Map) {
+        final replacement = verdict.cast<String, Object?>();
+        final error = validateArgs(capability.spec.parameters, replacement);
+        verdict = error != null ? 'hook returned invalid arguments: $error' : replacement;
+      }
+      if (verdict is Map<String, Object?>) {
+        run.ledger.append(run.id, 'hook_intervened',
+            {'command_id': command.id, 'stage': 'before', 'arguments': verdict});
+        args = verdict;
+      } else if (verdict != null) {
+        run.ledger.append(run.id, 'hook_intervened',
+            {'command_id': command.id, 'stage': 'before', 'rejected': verdict.toString()});
+        run.recordOutcome(command, 'failed', error: 'hook_rejected');
+        return ToolResult(
+            call: call,
+            outcome: 'failed',
+            error: 'hook_rejected',
+            commandId: command.id,
+            observation: 'Rejected by hook: $verdict');
+      }
+    }
+    var result = await _attempts(capability, args, ctx, run, call, command, handler, callCtx);
+    final after = hooks.afterCall;
+    if (after != null && !waitingOutcomes.contains(result.outcome)) {
+      final replacement = after(capability, args, result, callCtx);
+      if (replacement is String) {
+        run.ledger.append(run.id, 'hook_intervened',
+            {'command_id': command.id, 'stage': 'after', 'observation': replacement});
+        result = result.withObservation(replacement);
+      }
+    }
+    return result;
+  }
+
+  Future<ToolResult> _attempts(
+    Capability capability,
+    Map<String, Object?> args,
+    ToolContext ctx,
+    Run run,
+    ToolCall call,
+    Command command,
+    Function handler,
+    ToolContext callCtx,
+  ) async {
     final resolved = capability.execution.resolveHandles
         ? (ctx.store!.resolveArgs(args) as Map).cast<String, Object?>()
         : args;

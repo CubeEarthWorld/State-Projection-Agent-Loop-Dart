@@ -49,7 +49,35 @@ final Map<String, Object?> finishSchema = {
 };
 
 abstract interface class LLMAdapter {
-  Future<Decision> complete(List<Message> messages, [List<Map<String, Object?>>? tools]);
+  /// [onDelta], when given, receives the assistant text as it streams in;
+  /// the returned Decision is still the whole turn. An adapter that cannot
+  /// stream simply ignores it.
+  Future<Decision> complete(List<Message> messages,
+      [List<Map<String, Object?>>? tools, void Function(String text)? onDelta]);
+}
+
+/// Try each adapter in turn; the first that answers wins. A retry never
+/// reaches the tools — it happens before any Decision exists.
+class FallbackAdapter implements LLMAdapter {
+  FallbackAdapter(this.adapters) {
+    if (adapters.isEmpty) throw ArgumentError('FallbackAdapter needs at least one adapter');
+  }
+
+  final List<LLMAdapter> adapters;
+
+  @override
+  Future<Decision> complete(List<Message> messages,
+      [List<Map<String, Object?>>? tools, void Function(String text)? onDelta]) async {
+    Object? error;
+    for (final adapter in adapters) {
+      try {
+        return await adapter.complete(messages, tools, onDelta);
+      } catch (e) {
+        error = e; // the next adapter gets its turn
+      }
+    }
+    throw error!;
+  }
 }
 
 /// Pull a `finish(result)` call (if present) out of `decision.calls` and
@@ -168,8 +196,17 @@ class ScriptedLLM implements LLMAdapter {
       Decision(text: text, finish: true, result: result);
 
   @override
-  Future<Decision> complete(List<Message> messages, [List<Map<String, Object?>>? tools]) async {
+  Future<Decision> complete(List<Message> messages,
+      [List<Map<String, Object?>>? tools, void Function(String text)? onDelta]) async {
     requests.add({'messages': List.of(messages), 'tools': List.of(tools ?? [])});
+    final decision = await _next(messages, tools);
+    if (onDelta != null && decision.text.isNotEmpty) {
+      onDelta(decision.text); // one chunk: enough to test a streaming host
+    }
+    return decision;
+  }
+
+  Future<Decision> _next(List<Message> messages, List<Map<String, Object?>>? tools) async {
     if (_i >= _steps.length) {
       if (strict) {
         throw StateError(

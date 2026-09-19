@@ -54,6 +54,11 @@ void setEstimator(TokenEstimator fn) {
 
 
 /// Estimate tokens for text, message-like objects, lists, or maps.
+/// What one image part costs: a provider's typical per-image charge.
+/// Counting the base64 text instead would overshoot by two orders of
+/// magnitude.
+const int imageTokens = 1000;
+
 int estimateTokens(Object? obj) {
   if (obj == null) return 0;
   if (obj is String) return _estimator(obj);
@@ -68,6 +73,7 @@ int estimateTokens(Object? obj) {
     return total;
   }
   if (obj is Map) {
+    if (obj['type'] == 'image_url' || obj['type'] == 'image') return imageTokens;
     return _estimator(dumps(obj));
   }
   return _estimator(obj.toString());

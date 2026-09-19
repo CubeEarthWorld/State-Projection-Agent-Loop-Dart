@@ -20,6 +20,8 @@ import 'registry.dart';
 import 'run.dart';
 import 'working_state.dart';
 
+void _noEmit(String text) {}
+
 class ToolContext {
   ToolContext({
     required this.config,
@@ -31,6 +33,7 @@ class ToolContext {
     this.store,
     this.search,
     this.commandId = '',
+    this.emit = _noEmit,
   }) : workingState = workingState ?? WorkingState();
 
   final Config config;
@@ -42,6 +45,9 @@ class ToolContext {
   final ArtifactStore? store;
   final ToolSearch? search;
   final String commandId;
+  // Hands a chunk of the tool's progress output to the session's onDelta
+  // observer, if any. Delivery only: nothing emitted reaches the ledger.
+  final void Function(String text) emit;
 
   String get runId => run?.id ?? '';
 
@@ -56,6 +62,7 @@ class ToolContext {
         store: store,
         search: search,
         commandId: commandId,
+        emit: emit,
       );
 }
 
@@ -69,6 +76,7 @@ class TurnContext extends ToolContext {
     super.session,
     super.store,
     super.search,
+    super.emit,
     List<ScoredTool>? candidates,
     List<Map<String, Object?>>? apiTools,
   })  : candidates = candidates ?? <ScoredTool>[],

@@ -8,6 +8,7 @@
 /// ledger IS the truth; the projection is a disposable window over it.
 library;
 
+import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
 
@@ -67,6 +68,8 @@ class Session {
     EventLedger? ledger,
     Iterable<String> builtins = defaultBuiltins,
     void Function(Event event)? onEvent,
+    this.onDelta,
+    Hooks hooks = const Hooks(),
     Snapshot? restored,
   })  : config = config ?? Config(),
         registry = registry ?? Registry() {
@@ -99,7 +102,7 @@ class Session {
           kernelText: kernel,
         );
     projection = Projection(sectionList, windowTokens: this.config.projection.windowTokens);
-    runtime = Runtime(this.registry, this.config);
+    runtime = Runtime(this.registry, this.config, hooks: hooks);
 
     if (restored == null) {
       // Typed fields go through the same parser snapshots use, so a seeded
@@ -154,6 +157,11 @@ class Session {
       _branchArgs;
   late final Projection projection;
   late final Runtime runtime;
+  // `onDelta(source, text)` sees assistant text as it streams in (source
+  // "model") and tool progress from ctx.emit (source "tool"). Delivery only:
+  // the ledger still records whole turns.
+  final void Function(String source, String text)? onDelta;
+  Completer<void>? _inflight;
   late WorkingState workingState;
   ChecklistStore get checklists => workingState.checklists;
   late BudgetState budget;
@@ -176,9 +184,12 @@ class Session {
   List<Message> get conversation =>
       [for (final (_, message) in renderable(ledger, run.id)) message];
 
-  Future<Object?> send(String text) async {
+  /// [content] is a String, or a list of content parts (`{"type": "text",
+  /// ...}`, `{"type": "image_url", ...}`) passed through to the adapter as
+  /// the user message.
+  Future<Object?> send(Object content) async {
     return _guarded(() async {
-      ledger.append(run.id, 'user_input', {'text': text});
+      ledger.append(run.id, 'user_input', {'text': content});
       _checkpoint();
       return await _loop();
     });
@@ -188,8 +199,13 @@ class Session {
   /// run until finish(result).
   Future<Object?> runJob(String task) => send(task);
 
+  /// Stop after the current step. A model call still waiting for the
+  /// provider is abandoned outright; a tool that is already running
+  /// finishes, so its outcome is recorded.
   void interrupt() {
     _interrupted = true;
+    final inflight = _inflight;
+    if (inflight != null && !inflight.isCompleted) inflight.complete();
   }
 
   void addSection(Section section, {String before = 'candidates'}) {
@@ -404,7 +420,9 @@ class Session {
         'candidates': [for (final s in ctx.candidates) s.tool.name],
       });
 
-      final decision = extractFinish(await llm.complete(messages, ctx.apiTools.isNotEmpty ? ctx.apiTools : null));
+      final answer = await _complete(messages, ctx.apiTools.isNotEmpty ? ctx.apiTools : null);
+      if (answer == null) continue; // interrupt() abandoned the call; the loop head records it
+      final decision = extractFinish(answer);
       budget.noteDecision(decision, messages, ctx.apiTools, config);
       final resolvedCalls = [
         for (final call in decision.calls)
@@ -470,6 +488,47 @@ class Session {
     }
   }
 
+  /// One model call under `config.model`: a timeout, retries with backoff,
+  /// abandonment by [interrupt] (null). Every failed attempt is a
+  /// `model_call_failed` event; when the last one fails, a job run fails and
+  /// the error reaches the caller.
+  Future<Decision?> _complete(List<Message> messages, List<Map<String, Object?>>? tools) async {
+    final cfg = config.model;
+    // Only a host that observes deltas asks the adapter to stream.
+    final onModelDelta = onDelta == null ? null : (String text) => onDelta!('model', text);
+    for (var attempt = 1; attempt <= cfg.retries + 1; attempt++) {
+      final interrupted = _inflight = Completer<void>();
+      try {
+        var call = llm.complete(messages, tools, onModelDelta);
+        if (cfg.timeoutS != null) {
+          call = call.timeout(Duration(milliseconds: (cfg.timeoutS! * 1000).round()));
+        }
+        final outcome = await Future.any<Object?>([call, interrupted.future]);
+        if (outcome == null) return null;
+        return outcome as Decision;
+      } catch (e) {
+        final error = e is TimeoutException ? 'timed out after ${cfg.timeoutS}s' : '${e.runtimeType}: $e';
+        ledger.append(run.id, 'model_call_failed', {'attempt': attempt, 'error': error});
+        if (attempt > cfg.retries) {
+          if (config.mode == 'job' && !terminalStates.contains(run.state)) {
+            run.fail('model_error: $error');
+          }
+          _snapshot();
+          rethrow;
+        }
+        await Future<void>.delayed(Duration(milliseconds: (cfg.backoffS * attempt * 1000).round()));
+      } finally {
+        _inflight = null;
+      }
+    }
+    throw StateError('unreachable');
+  }
+
+  void _emit(String text) {
+    final observer = onDelta;
+    if (observer != null) observer('tool', text);
+  }
+
   (TurnContext, List<Message>) _project() {
     final ctx = _context();
     final messages = projection.render(
@@ -502,7 +561,8 @@ class Session {
       Message(role: kSystem, content: foldInstructions),
       Message(role: kUser, content: transcript),
     ];
-    final decision = await llm.complete(prompt);
+    final decision = await _complete(prompt, null);
+    if (decision == null) return false;
     budget.noteDecision(decision, prompt, const [], config);
     final delta = parseFoldReply(decision.text);
     final before = workingState.toDict();
@@ -567,6 +627,7 @@ class Session {
         store: store,
         search: search,
         candidates: _layer2Candidates(),
+        emit: _emit,
       );
 
   List<ScoredTool> _layer2Candidates() {

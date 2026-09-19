@@ -47,6 +47,7 @@ export 'src/ids.dart' show newId, newUlid;
 export 'src/llm.dart'
     show
         LLMAdapter,
+        FallbackAdapter,
         ScriptedLLM,
         Step,
         TextStep,
@@ -89,10 +90,11 @@ export 'src/runtime.dart'
         Runtime,
         ToolResult,
         ExecuteBatchResult,
-        BudgetState;
+        BudgetState,
+        Hooks;
 export 'src/json_schema.dart' show validateArgs, validateValue, applyDefaults;
 export 'src/session.dart' show Session, ConcurrencyError;
-export 'src/tokens.dart' show estimateTokens, estimateTextTokens, setEstimator;
+export 'src/tokens.dart' show estimateTokens, estimateTextTokens, setEstimator, imageTokens;
 export 'src/working_state.dart' show WorkingState, RecordedDecision, workingStateFields;
 
 const String packageVersion = '0.5.0';
