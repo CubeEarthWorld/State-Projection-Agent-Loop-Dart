@@ -227,6 +227,15 @@ class Session {
     if (inflight != null && !inflight.isCompleted) inflight.complete();
   }
 
+  /// Put out-of-band text into the run's context.
+  ///
+  /// For what the host did outside the loop and the model must still know
+  /// about: a command the user typed that ran locally, a skill loaded on
+  /// demand (`session.notice(await session.invoke('skill.foo.load'))`), a
+  /// file that was attached. It renders as a system message, costs no turn
+  /// and calls no model — what the *user* said goes through [send].
+  void notice(String text) => _notice(text);
+
   void addSection(Section section, {String before = 'candidates'}) {
     projection.insertBefore(before, section);
   }

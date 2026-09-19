@@ -220,6 +220,24 @@ void main() {
     });
   });
 
+  // A slash command the host ran itself: the model must see what happened
+  // without the host faking a user turn.
+  group('HostNotices', () {
+    test('notice reaches the next prompt without calling the model', () async {
+      final llm = ScriptedLLM([const TextStep('ok')]);
+      final session = Session(llm);
+      session.notice("[host] /compact ran: history folded on the user's request.");
+      expect(llm.requests, isEmpty); // no turn spent
+
+      await session.send('continue');
+      final prompt = llm.requests[0]['messages']! as List<Message>;
+      final hits = prompt.where((m) => '${m.content}'.contains('/compact ran'));
+      expect(hits, isNotEmpty);
+      // It is the system speaking, not the user.
+      expect(hits.map((m) => m.role), everyElement(equals('system')));
+    });
+  });
+
   group('PolicyGating', () {
     test('deny blocks execution without running handler', () async {
       final executed = <bool>[];
