@@ -246,7 +246,7 @@ class Run {
     return cmd;
   }
 
-  void recordOutcome(Command command, String outcome, {String? error, String? resultRef}) {
+  void recordOutcome(Command command, String outcome, {String? error, String? resultRef, int? durationMs}) {
     if (!commandOutcomes.contains(outcome)) {
       throw ArgumentError('Unknown command outcome "$outcome"');
     }
@@ -258,8 +258,12 @@ class Run {
       'failed': 'command_failed',
       'unknown': 'command_outcome_unknown',
     };
-    ledger.append(id, eventTypeFor[outcome]!,
-        {'command_id': command.id, 'error': error, 'result_ref': resultRef});
+    ledger.append(id, eventTypeFor[outcome]!, {
+      'command_id': command.id,
+      'error': error,
+      'result_ref': resultRef,
+      'duration_ms': durationMs,
+    });
   }
 
   // -- approval -------------------------------------------------------------

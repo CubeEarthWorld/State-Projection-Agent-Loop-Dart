@@ -598,6 +598,7 @@ class Runtime {
     final attempts = capability.execution.retries + 1 < 1 ? 1 : capability.execution.retries + 1;
     var lastError = '';
     var lastOutcome = 'failed';
+    final started = Stopwatch()..start();
     for (var attempt = 0; attempt < attempts; attempt++) {
       command.attempts += 1;
       try {
@@ -615,7 +616,7 @@ class Runtime {
           );
         }
         final (observation, artifactId) = _observationFor(capability, value, ctx.store!);
-        run.recordOutcome(command, 'ok', resultRef: artifactId);
+        run.recordOutcome(command, 'ok', resultRef: artifactId, durationMs: started.elapsedMilliseconds);
         return ToolResult(
           call: call,
           value: value,
@@ -640,7 +641,7 @@ class Runtime {
         await Future.delayed(Duration(milliseconds: delayMs));
       }
     }
-    run.recordOutcome(command, lastOutcome, error: lastError);
+    run.recordOutcome(command, lastOutcome, error: lastError, durationMs: started.elapsedMilliseconds);
     final isUnknown = lastOutcome == 'unknown';
     return ToolResult(
       call: call,

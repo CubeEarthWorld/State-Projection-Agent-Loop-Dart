@@ -443,6 +443,7 @@ class Session {
         'candidates': [for (final s in ctx.candidates) s.tool.name],
       });
 
+      final started = Stopwatch()..start();
       final answer = await _complete(messages, ctx.apiTools.isNotEmpty ? ctx.apiTools : null);
       if (answer == null) continue; // interrupt() abandoned the call; the loop head records it
       final decision = extractFinish(answer);
@@ -460,6 +461,8 @@ class Session {
         'text': decision.text,
         'finish': decision.finish,
         'calls': [for (final c in resolvedCalls) c.toDict()],
+        'usage': decision.usage?.toDict(),
+        'latency_ms': started.elapsedMilliseconds,
       });
 
       if (decision.finish && resolvedCalls.isNotEmpty) {

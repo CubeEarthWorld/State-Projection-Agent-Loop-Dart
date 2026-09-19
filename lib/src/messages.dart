@@ -122,12 +122,19 @@ class Message {
 }
 
 class Usage {
-  Usage({this.promptTokens = 0, this.completionTokens = 0});
+  Usage({this.promptTokens = 0, this.completionTokens = 0, this.cachedTokens = 0});
 
   final int promptTokens;
   final int completionTokens;
+  // Of promptTokens, how many the provider served from its prompt cache (0
+  // when it does not say): the number that tells whether the projection's
+  // prefix stayed byte-stable between turns.
+  final int cachedTokens;
 
   int get totalTokens => promptTokens + completionTokens;
+
+  Map<String, int> toDict() =>
+      {'prompt_tokens': promptTokens, 'completion_tokens': completionTokens, 'cached_tokens': cachedTokens};
 }
 
 /// One model output: plain text and/or a batch of tool calls.
