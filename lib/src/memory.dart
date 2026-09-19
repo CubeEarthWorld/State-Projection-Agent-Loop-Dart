@@ -8,7 +8,8 @@
 library;
 
 import 'dart:convert';
-import 'dart:io';
+
+import 'fs.dart';
 
 import 'discovery.dart' show tokenize;
 import 'ids.dart';
@@ -43,18 +44,18 @@ abstract interface class MemoryStore {
 /// is lexical: the notes sharing the most query tokens (text and tags) come
 /// first, newest first among equals.
 class JsonlMemoryStore implements MemoryStore {
-  JsonlMemoryStore([String? path]) : file = path == null ? null : File(path) {
-    final f = file;
-    if (f != null && f.existsSync()) {
-      for (final line in f.readAsLinesSync()) {
-        if (line.trim().isNotEmpty) {
-          _notes.add(Note.fromDict((jsonDecode(line) as Map).cast<String, Object?>()));
-        }
+  JsonlMemoryStore([this.path]) {
+    final target = path;
+    if (target == null) return;
+    for (final line in requireFileSystem('Persistent memory').readLines(target)) {
+      if (line.trim().isNotEmpty) {
+        _notes.add(Note.fromDict((jsonDecode(line) as Map).cast<String, Object?>()));
       }
     }
   }
 
-  final File? file;
+  /// JSONL file path, or null to keep notes in process memory only.
+  final String? path;
   final List<Note> _notes = [];
 
   @override
@@ -62,10 +63,10 @@ class JsonlMemoryStore implements MemoryStore {
     final note = Note(
         id: newId('note'), text: text, tags: List.of(tags), ts: DateTime.now().millisecondsSinceEpoch / 1000.0);
     _notes.add(note);
-    final f = file;
-    if (f != null) {
-      f.parent.createSync(recursive: true);
-      f.writeAsStringSync('${dumps(note.toDict())}\n', mode: FileMode.append, encoding: utf8);
+    final target = path;
+    if (target != null) {
+      requireFileSystem('Persistent memory')
+          .appendString(target, '${dumps(note.toDict())}\n');
     }
     return note;
   }

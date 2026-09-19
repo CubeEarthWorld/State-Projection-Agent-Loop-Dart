@@ -10,7 +10,6 @@ library;
 
 import 'dart:async';
 import 'dart:collection';
-import 'dart:io';
 
 import 'artifacts.dart';
 import 'builtin/builtin.dart' show defaultBuiltins, installBuiltins;
@@ -96,7 +95,7 @@ class Session {
     this.memory = memory ?? JsonlMemoryStore(ledgerDir == null ? null : '$ledgerDir/memory.jsonl');
 
     final artifactsDir = this.config.artifacts.directory;
-    store = ArtifactStore(run.id, directory: artifactsDir != null ? Directory(artifactsDir) : null);
+    store = ArtifactStore(run.id, directory: artifactsDir);
     search = ToolSearch(this.registry, embedder: embedder, vector: this.config.discovery.vector);
 
     // What branch() hands to the new session: code, not state, so it is
@@ -555,7 +554,24 @@ class Session {
     if (observer != null) observer('tool', text);
   }
 
+  /// One step of the verbatim point: cut the tail back to `fullWindow`
+  /// messages. Taken when the tail has grown to four times that (a turn adds
+  /// several messages, so this is one rebuild every few turns), or when a
+  /// fold needs something older than the point to work on ([force]).
+  /// Between steps the rendering of every older message is unchanged, so
+  /// the prompt prefix stays byte-identical and a provider's cache keeps
+  /// hitting.
+  bool _stepTiers({required bool force}) {
+    final keep = config.compression.fullWindow;
+    final history = renderable(ledger, run.id);
+    final tail = history.where((h) => h.$1.sequence >= workingState.verbatimSequence).length;
+    if (keep <= 0 || tail <= keep || (tail <= 4 * keep && !force)) return false;
+    workingState.verbatimSequence = history[history.length - keep].$1.sequence;
+    return true;
+  }
+
   (TurnContext, List<Message>) _project() {
+    _stepTiers(force: false);
     final ctx = _context();
     final messages = projection.render(
       ctx,
@@ -575,12 +591,17 @@ class Session {
     if (ratio <= 0) return false;
     final used = estimateTokens(messages) + projection.schemaTokens(ctx.apiTools);
     if (used <= ratio * config.projection.windowTokens) return false;
-    final history = renderable(ledger, run.id);
-    final keep = config.compression.fullWindow;
-    final foldable = [
-      for (final (e, m) in history.take(history.length > keep ? history.length - keep : 0))
-        if (e.sequence > workingState.foldedSequence) (e, m),
-    ];
+    // Fold from the ledger, never from the projection: what masking cleared
+    // from the prompt is exactly what a fold must still read. The region is
+    // everything before the verbatim point, so the fold changes only what
+    // the tiers already stopped rendering in full.
+    List<(Event, Message)> region() => [
+          for (final (e, m) in renderable(ledger, run.id))
+            if (workingState.foldedSequence < e.sequence && e.sequence < workingState.verbatimSequence)
+              (e, m),
+        ];
+    var foldable = region();
+    if (foldable.isEmpty && _stepTiers(force: true)) foldable = region();
     if (foldable.isEmpty) return false;
     final transcript = [for (final (_, m) in foldable) '${m.role}: ${m.content}'].join('\n');
     final prompt = [
@@ -592,7 +613,9 @@ class Session {
     budget.noteDecision(decision, prompt, const [], config);
     final delta = parseFoldReply(decision.text);
     final before = workingState.toDict();
-    final error = delta == null ? 'reply was not a JSON object' : applyFoldDelta(workingState, delta);
+    final error = delta == null
+        ? 'reply was not a JSON object'
+        : applyFoldDelta(workingState, delta, transcript: transcript);
     if (error != null) {
       _notice('[runtime] compaction skipped: $error');
       return false;
@@ -614,7 +637,7 @@ class Session {
       // never ran; instead the whole decision stays out of the projection
       // until it completes — see pairToolCalls.
       if (record && !waitingOutcomes.contains(result.outcome)) {
-        _observe(result.call.id, result.call.name, result.observation);
+        _observe(result.call.id, result.call.name, result.observation, ok: result.ok);
       }
       if (result.ok) {
         _activate(result.call.name);
@@ -698,10 +721,10 @@ class Session {
     names.addAll(_active);
     final schemas = [
       for (final n in names)
-        if (registry.contains(n)) registry.get(n)!.apiSchema(),
+        if (registry.contains(n)) registry.get(n)!.toolSpec(),
     ];
     if (config.mode == 'job') {
-      schemas.add(finishSchema);
+      schemas.add(finishSpec);
     }
     return schemas;
   }
@@ -734,8 +757,8 @@ class Session {
     return _continue;
   }
 
-  void _observe(String callId, String name, String text) {
-    ledger.append(run.id, 'observation', {'call_id': callId, 'name': name, 'text': text});
+  void _observe(String callId, String name, String text, {bool ok = true}) {
+    ledger.append(run.id, 'observation', {'call_id': callId, 'name': name, 'text': text, 'ok': ok});
   }
 
   void _notice(String text) {

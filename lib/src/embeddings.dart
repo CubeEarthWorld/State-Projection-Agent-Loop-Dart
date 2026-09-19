@@ -10,9 +10,10 @@
 library;
 
 import 'dart:convert';
+
+import 'hashing.dart';
 import 'dart:math' as math;
 
-import 'package:crypto/crypto.dart';
 
 typedef Vector = List<double>;
 
@@ -62,15 +63,7 @@ class HashingEmbedding implements EmbeddingBackend {
     for (final n in [2, 3]) {
       for (var i = 0; i + n <= runes.length; i++) {
         final gram = String.fromCharCodes(runes.getRange(i, i + n));
-        final digest = md5.convert(utf8.encode(gram)).bytes;
-        // little-endian uint32 from the first 4 bytes, full 32 bits: masking
-        // off the sign bit would change the bucket for any non-power-of-two
-        // dim.
-        final h = digest[0] |
-            (digest[1] << 8) |
-            (digest[2] << 16) |
-            (digest[3] << 24);
-        vec[h % dim] += 1.0;
+        vec[fnv1a32(utf8.encode(gram)) % dim] += 1.0;
       }
     }
     var norm = 0.0;

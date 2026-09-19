@@ -411,18 +411,27 @@ class Capability {
   /// most native-function-calling providers, OpenAI included, reject "." in
   /// a function name. Callers translate the name back with [fromApiName]
   /// (see `Registry.resolveApiName`) before the call reaches the registry.
-  Map<String, Object?> apiSchema() {
-    var description = spec.description.isEmpty ? card.summary : spec.description;
+  /// Provider-neutral description of one callable tool.
+  ///
+  /// Deliberately just `name` / `description` / `parameters` (JSON Schema):
+  /// the runtime states what the tool *is* and each adapter renders that
+  /// into whatever its provider wants - OpenAI's
+  /// `{'type': 'function', 'function': {...}}` envelope, Anthropic's
+  /// `input_schema`, a text protocol, anything. Emitting one vendor's
+  /// envelope from the core would make every other adapter unwrap it
+  /// first, and would quietly make that vendor the default.
+  ///
+  /// Uses [apiName] (dots encoded as `__`), not the dotted [name]: most
+  /// native-function-calling providers reject "." in a function name.
+  Map<String, Object?> toolSpec() {
+    var description = spec.description.isNotEmpty ? spec.description : card.summary;
     if (spec.usageNotes.isNotEmpty) {
       description = '$description\nUsage: ${spec.usageNotes}';
     }
     return {
-      'type': 'function',
-      'function': {
-        'name': apiName,
-        'description': description,
-        'parameters': spec.parameters,
-      },
+      'name': apiName,
+      'description': description,
+      'parameters': spec.parameters,
     };
   }
 

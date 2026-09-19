@@ -3,6 +3,7 @@
 import 'dart:io';
 
 import 'package:state_projection_loop/state_projection_loop.dart';
+import 'package:state_projection_loop/native.dart';
 import 'package:test/test.dart';
 
 import '../util.dart';

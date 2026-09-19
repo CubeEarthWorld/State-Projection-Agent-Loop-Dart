@@ -29,12 +29,28 @@ String _encode(BigInt value, int length) {
   return chars.join();
 }
 
+/// Bits drawn per `nextInt` call.
+///
+/// Deliberately not 32: `1 << 32` is 2^32 on the VM but truncates to 0 when
+/// compiled to JavaScript, where `int` is a double and shifts are 32-bit,
+/// and `nextInt(0)` throws. 24 keeps the bound well inside the range every
+/// platform computes exactly.
+const int _chunkBits = 24;
+
+int _pow2(int n) {
+  var value = 1;
+  for (var i = 0; i < n; i++) {
+    value *= 2;
+  }
+  return value;
+}
+
 BigInt _randomBits(int bits) {
   var value = BigInt.zero;
   var remaining = bits;
   while (remaining > 0) {
-    final take = remaining >= 32 ? 32 : remaining;
-    final chunk = _random.nextInt(1 << take);
+    final take = remaining >= _chunkBits ? _chunkBits : remaining;
+    final chunk = _random.nextInt(_pow2(take));
     value = (value << take) | BigInt.from(chunk);
     remaining -= take;
   }

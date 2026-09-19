@@ -7,9 +7,10 @@
 library;
 
 import 'dart:convert';
+
+import 'hashing.dart';
 import 'dart:math';
 
-import 'package:crypto/crypto.dart';
 
 final List<(RegExp, String)> _noisePatterns = [
   (RegExp(r'^diff --git .+\n', multiLine: true), ''),
@@ -32,7 +33,7 @@ const double _tailRatio = 0.25;
 /// SHA-256, truncated to 16 hex digits — the same value the Python package
 /// produces for the same input, so keys stay comparable across the two.
 String contentHash(String text) =>
-    sha256.convert(utf8.encode(text)).toString().substring(0, 16);
+    fnv1a64Hex(utf8.encode(text));
 
 /// Split into lines *keeping* the line terminators, so joining the pieces
 /// reproduces the input byte for byte. Matches Python's
@@ -117,5 +118,42 @@ String summarizeText(String text) {
       ? '${String.fromCharCodes(firstRunes.take(maxFirst))}…'
       : first;
   return '$truncatedFirst  [$lineCount lines, $charCount chars]';
+}
+
+// What an error looks like in a tool result, whatever the language it is
+// reported in: the structural traces first (exit codes, stack frames), then
+// the word for it in the languages agents commonly work in. A result whose
+// call *failed* is treated as an error without consulting this at all.
+final RegExp _errorMarker = RegExp(
+  r'\b(error|traceback|exception|failed|denied|fatal|panic|fehler|erreur|errore)\b'
+  r'|(?:exit(?: code)?|returncode|status)[=: ]+[1-9]'
+  r'|\bline \d+, in \b|\bat [^\n]+:\d+'
+  r'|エラー|失敗|例外|错误|失败|异常|오류|실패|ошибка|исключение',
+  caseSensitive: false,
+);
+
+/// The compressed form of an old tool result: cleared down to its first line
+/// and size — the model already acted on it — unless the call failed or the
+/// text reports an error, which stays readable (head and tail) because errors
+/// are what a later step most often needs to look back at.
+String maskObservation(String text, {int maxLines = 40, bool failed = false}) =>
+    failed || _errorMarker.hasMatch(text) ? compressText(text, maxLines: maxLines) : summarizeText(text);
+
+final RegExp _identifier = RegExp(r'[A-Za-z0-9_][\w./:-]*[\w/]');
+final RegExp _digit = RegExp(r'[0-9]');
+final RegExp _punctuation = RegExp(r'[./:_-]');
+
+/// Identifier-like tokens of [entry] (paths, ids, numbers, names with digits
+/// or punctuation) that never occur in [transcript]: the parts a summary
+/// could only have invented.
+List<String> ungrounded(String entry, String transcript) {
+  final haystack = transcript.toLowerCase();
+  return [
+    for (final match in _identifier.allMatches(entry))
+      if (match[0]!.length >= 3 &&
+          (_digit.hasMatch(match[0]!) || _punctuation.hasMatch(match[0]!)) &&
+          !haystack.contains(match[0]!.toLowerCase()))
+        match[0]!,
+  ];
 }
 

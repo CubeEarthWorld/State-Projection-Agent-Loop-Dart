@@ -10,6 +10,7 @@ library;
 
 import 'dart:convert';
 
+import 'compression.dart' show ungrounded;
 import 'json_schema.dart';
 import 'working_state.dart';
 
@@ -60,9 +61,30 @@ Map<String, Object?>? parseFoldReply(String text) {
 }
 
 /// Validate and merge a fold delta. Returns an error message, or null.
-String? applyFoldDelta(WorkingState ws, Map<String, Object?> delta) {
+/// Validate and merge a fold delta. Returns an error message, or null.
+///
+/// With a [transcript], entries carrying identifiers it never mentions are
+/// dropped from the delta (and listed under `delta['ungrounded']`) before
+/// the merge.
+String? applyFoldDelta(WorkingState ws, Map<String, Object?> delta, {String transcript = ''}) {
   final error = validateValue(foldSchema, delta);
   if (error != null) return error;
+  if (transcript.isNotEmpty) {
+    final dropped = <String>[];
+    bool grounded(Object? entry) {
+      final text = entry is String ? entry : '${(entry as Map)['text'] ?? ''} ${entry['reason'] ?? ''}';
+      final missing = ungrounded(text, transcript);
+      if (missing.isNotEmpty) dropped.add('$text (unknown: ${missing.join(', ')})');
+      return missing.isEmpty;
+    }
+
+    for (final key in const ['facts_add', 'decisions_add', 'questions_add', 'next_actions']) {
+      if (delta.containsKey(key)) {
+        delta[key] = [for (final entry in delta[key] as List) if (grounded(entry)) entry];
+      }
+    }
+    if (dropped.isNotEmpty) delta['ungrounded'] = dropped;
+  }
   final resolve = ((delta['questions_resolve'] as List?) ?? []).cast<String>();
   for (final q in resolve) {
     if (!ws.openQuestions.contains(q)) return 'questions_resolve names an unknown question: $q';

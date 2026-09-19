@@ -16,6 +16,7 @@
 library;
 
 import 'llm.dart' show finishName;
+import 'fs.dart';
 import 'compression.dart';
 import 'context.dart';
 import 'events.dart';
@@ -23,7 +24,6 @@ import 'messages.dart';
 import 'registry.dart';
 import 'tokens.dart';
 import 'serialization.dart';
-import 'dart:io';
 
 /// One slice of the prompt.
 ///
@@ -112,7 +112,7 @@ class KernelSection extends Section {
       _rebuild(ctx.registry, ctx.config.mode);
       _cachedKey = key;
     }
-    final nativeNames = {for (final t in ctx.apiTools) (t['function'] as Map?)?['name']};
+    final nativeNames = {for (final t in ctx.apiTools) t['name']};
     return List.of(ctx.apiTools.isNotEmpty && nativeNames.containsAll(_pinnedApiNames)
         ? _nativeMessages
         : _messages);
@@ -139,18 +139,17 @@ class InstructionsSection extends Section {
 
   static String load(String root, [List<String> files = defaultFiles]) {
     final found = <(String, String)>[];
-    var folder = Directory(root).absolute;
-    while (true) {
+    final fs = requireFileSystem('The instructions section');
+    String? folder = fs.absolutePath(root);
+    while (folder != null) {
       for (final name in files) {
-        final candidate = File('${folder.path}${Platform.pathSeparator}$name');
-        if (candidate.existsSync()) {
-          found.add((candidate.path, candidate.readAsStringSync().trim()));
+        final candidate = joinPath(folder, name);
+        if (fs.exists(candidate)) {
+          found.add((candidate, fs.readString(candidate).trim()));
           break; // one file per folder: the first name listed wins
         }
       }
-      final parent = folder.parent;
-      if (parent.path == folder.path) break;
-      folder = parent;
+      folder = fs.parentOf(folder);
     }
     return [
       for (final (path, text) in found.reversed)
@@ -226,33 +225,41 @@ class HistorySection extends Section {
   @override
   final String name = 'history';
 
+  /// Tiers by distance from the working state's `verbatimSequence`: the
+  /// tail (from that point on) and the user's own words are verbatim; before
+  /// the point, the nearest `compressedWindow` messages are compressed (tool
+  /// results masked unless they failed or report an error), the next
+  /// `summaryWindow` are one-line summaries, older ones are dropped, and a
+  /// folded message keeps only the user's words. The point moves in steps,
+  /// so between steps the rendering of every older message is unchanged.
   @override
   List<Message> render(TurnContext ctx) {
     final cfg = ctx.config.compression;
+    final state = ctx.workingState;
     final history = renderable(ctx.ledger!, ctx.runId);
+    final older = history.where((h) => h.$1.sequence < state.verbatimSequence).length;
     final messages = <Message>[];
     for (var i = 0; i < history.length; i++) {
       final (event, message) = history[i];
-      final age = history.length - 1 - i;
       // Content may be a list of parts (text + images). Only a plain string
       // can be compressed; stringifying a part list would destroy it, so it
       // passes through untouched.
       var content = message.content;
-      if (content is String && content.isNotEmpty) {
-        if (event.sequence <= ctx.workingState.foldedSequence) {
-          content = summarizeText(content); // folded into the working state
-        } else if (age < cfg.fullWindow) {
-          // verbatim
-        } else if (age < cfg.compressedWindow) {
-          content = compressText(content,
-              maxLines: message.role == kObservation
-                  ? cfg.observationMaxLines
-                  : cfg.compressedMaxLines);
-        } else if (age < cfg.summaryWindow) {
-          content = summarizeText(content);
-        } else {
-          continue;
+      if (event.sequence >= state.verbatimSequence || message.role == kUser) {
+        // the tail, and the user's own words, are always verbatim
+      } else if (event.sequence <= state.foldedSequence) {
+        continue; // its substance lives in the working state now
+      } else if (older - i <= cfg.compressedWindow) {
+        if (content is String && content.isNotEmpty) {
+          content = message.role == kObservation
+              ? maskObservation(content,
+                  maxLines: cfg.observationMaxLines, failed: event.data['ok'] == false)
+              : compressText(content, maxLines: cfg.compressedMaxLines);
         }
+      } else if (older - i <= cfg.compressedWindow + cfg.summaryWindow) {
+        if (content is String && content.isNotEmpty) content = summarizeText(content);
+      } else {
+        continue;
       }
       messages.add(message.copyWith(content: content));
     }
@@ -349,7 +356,7 @@ class CandidatesSection extends Section {
   }
 }
 
-Object? _schemaName(Map<String, Object?> schema) => (schema['function'] as Map?)?['name'];
+Object? _schemaName(Map<String, Object?> schema) => schema['name'];
 
 // ---------------------------------------------------------------------------
 // Pipeline
@@ -453,7 +460,8 @@ List<Section> buildDefaultSections(
 }) {
   final factories = <String, Section Function()>{
     'kernel': () => KernelSection(kernelText),
-    'instructions': () => InstructionsSection(Directory.current.path),
+    'instructions': () =>
+        InstructionsSection(requireFileSystem('The instructions section').currentDirectory),
     'toc': () => TocSection(),
     'working_state': () => WorkingStateSection(),
     'checklists': () => ChecklistSection(),

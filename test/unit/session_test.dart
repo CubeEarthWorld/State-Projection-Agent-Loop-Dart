@@ -88,7 +88,7 @@ void main() {
         // just the signature instead of repeating the full card.
         expect(joined, contains('[Tool candidates'));
         expect(joined, contains('demo.echo('));
-        final toolNames = (tools ?? []).map((t) => (t['function'] as Map)['name']).toList();
+        final toolNames = (tools ?? []).map((t) => t['name']).toList();
         // native schema names are provider-safe encoded (dots -> "__")
         expect(toolNames, contains('demo__echo'));
         expect(toolNames, contains('meta__tool__find'));
@@ -103,7 +103,7 @@ void main() {
       final reg = echoRegistry();
 
       Object step2(List<Message> messages, List<Map<String, Object?>>? tools) {
-        final names = (tools ?? []).map((t) => (t['function'] as Map)['name']).toList();
+        final names = (tools ?? []).map((t) => t['name']).toList();
         expect(names, contains('demo__echo')); // activated by find even without candidates
         return ScriptedLLM.call('demo.echo', arguments: {'text': 'via find_tools'});
       }
@@ -359,7 +359,7 @@ void main() {
           .whereType<String>()
           .join('\n');
       final tools = (request['tools'] as List)
-          .map((t) => ((t as Map)['function'] as Map)['name'] as String)
+          .map((t) => (t as Map)['name'] as String)
           .toList();
       return (prompt, tools);
     }

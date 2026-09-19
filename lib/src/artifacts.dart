@@ -16,7 +16,8 @@
 library;
 
 import 'dart:convert';
-import 'dart:io';
+
+import 'fs.dart';
 
 import 'ids.dart';
 import 'tokens.dart';
@@ -135,7 +136,8 @@ class ArtifactStore {
   ArtifactStore(this.runId, {this.directory});
 
   final String runId;
-  final Directory? directory;
+  /// Directory path, or null to keep every artifact in memory only.
+  final String? directory;
   final Map<String, ArtifactRecord> _records = {};
 
   ArtifactRecord put(Object? value, {String source = ''}) {
@@ -155,14 +157,14 @@ class ArtifactStore {
     return record;
   }
 
-  File _file(Directory dir, String aid) => File('${dir.path}/$runId/$aid.json');
+  String _file(String dir, String aid) =>
+      joinPath(joinPath(dir, runId), '$aid.json');
 
   void _persist(ArtifactRecord record) {
     final dir = directory;
     if (dir == null) return;
-    _file(dir, record.id)
-      ..parent.createSync(recursive: true)
-      ..writeAsStringSync(dumps(record.toPayload()), encoding: utf8);
+    requireFileSystem('Artifact persistence')
+        .writeString(_file(dir, record.id), dumps(record.toPayload()));
   }
 
   /// The record, recovered from disk when an earlier process wrote it: a
@@ -171,8 +173,11 @@ class ArtifactStore {
   ArtifactRecord? _find(String aid) {
     final known = _records[aid];
     final dir = directory;
-    if (known != null || dir == null || !_file(dir, aid).existsSync()) return known;
-    final payload = (jsonDecode(_file(dir, aid).readAsStringSync()) as Map).cast<String, Object?>();
+    if (known != null || dir == null) return known;
+    final fs = requireFileSystem('Artifact persistence');
+    final path = _file(dir, aid);
+    if (!fs.exists(path)) return known;
+    final payload = (jsonDecode(fs.readString(path)) as Map).cast<String, Object?>();
     return _records[aid] = ArtifactRecord.fromPayload(payload);
   }
 

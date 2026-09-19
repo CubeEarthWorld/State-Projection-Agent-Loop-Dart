@@ -13,8 +13,19 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:state_projection_loop/state_projection_loop.dart';
+import 'package:state_projection_loop/native.dart';
 
 /// Any OpenAI-compatible chat-completion endpoint, using only dart:io.
+/// Neutral tool specs -> OpenAI's `{'type': 'function', ...}` envelope.
+///
+/// The runtime hands every adapter the same neutral
+/// `{name, description, parameters}`; wrapping it for one provider is that
+/// provider's adapter's job. Anthropic, Gemini and the rest each need their
+/// own few lines instead of unwrapping someone else's.
+List<Map<String, Object?>> toOpenAiTools(List<Map<String, Object?>> tools) =>
+    [for (final tool in tools) {'type': 'function', 'function': tool}];
+
+
 class OpenAICompatAdapter implements LLMAdapter {
   OpenAICompatAdapter({required this.model, required this.apiKey, required this.baseUrl});
 
@@ -51,7 +62,7 @@ class OpenAICompatAdapter implements LLMAdapter {
       'model': model,
       'messages': [for (final m in messages) _toApi(m)],
       'temperature': 0.2,
-      if (tools != null && tools.isNotEmpty) 'tools': tools,
+      if (tools != null && tools.isNotEmpty) 'tools': toOpenAiTools(tools),
       if (tools != null && tools.isNotEmpty) 'tool_choice': 'auto',
     };
     final request = await _client.postUrl(Uri.parse('$baseUrl/chat/completions'));

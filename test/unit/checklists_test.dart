@@ -49,7 +49,7 @@ void main() {
     final kernel = session.projection.get('kernel')!;
     expect(kernel.render(turn).first.content.toString(),
         contains('Parameters (JSON Schema)'));
-    turn.apiTools = [for (final c in session.registry.pinned()) c.apiSchema()];
+    turn.apiTools = [for (final c in session.registry.pinned()) c.toolSpec()];
     expect(kernel.render(turn).first.content.toString(),
         isNot(contains('Parameters (JSON Schema)')));
     expect(kernel.render(turn).first.content.toString(), contains(tool));
@@ -437,7 +437,7 @@ void main() {
       policy: PolicyEngine(defaultDecision: 'allow'),
       spawnLlmFactory: (model) => ScriptedLLM([
         CallbackStep((messages, tools) {
-          seen.add([for (final t in tools ?? const []) ((t as Map)['function'] as Map)['name']]);
+          seen.add([for (final t in tools ?? const []) (t as Map)['name']]);
           return ScriptedLLM.finish('done');
         }),
       ]),

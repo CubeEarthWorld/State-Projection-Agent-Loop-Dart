@@ -46,6 +46,7 @@ class WorkingState {
     Map<String, Object?>? extra,
     ChecklistStore? checklists,
     this.foldedSequence = 0,
+    this.verbatimSequence = 0,
   })  : acceptanceCriteria = acceptanceCriteria ?? <String>[],
         constraints = constraints ?? <String>[],
         confirmedFacts = confirmedFacts ?? <String>[],
@@ -73,6 +74,11 @@ class WorkingState {
   // Ledger sequence up to which history has been folded into this state by
   // compaction; those events render at summary fidelity afterwards.
   int foldedSequence;
+  // Ledger sequence from which history renders verbatim. Everything older is
+  // tiered by its distance from this point, and the point moves only in
+  // steps (see Session._stepTiers), so the rendered prefix stays
+  // byte-identical between steps and a provider's prompt cache keeps hitting.
+  int verbatimSequence;
 
   bool isEmpty() =>
       goal.isEmpty &&
@@ -97,6 +103,7 @@ class WorkingState {
         'extra': Map<String, Object?>.from(extra),
         'checklists': checklists.toDict(),
         'folded_sequence': foldedSequence,
+        'verbatim_sequence': verbatimSequence,
       };
 
   factory WorkingState.fromDict(Map<String, Object?> d) => WorkingState(
@@ -114,6 +121,7 @@ class WorkingState {
         extra: (d['extra'] as Map?)?.cast<String, Object?>() ?? {},
         checklists: d.containsKey('checklists') ? ChecklistStore.fromDict(d['checklists']) : ChecklistStore(),
         foldedSequence: (d['folded_sequence'] as num?)?.toInt() ?? 0,
+        verbatimSequence: (d['verbatim_sequence'] as num?)?.toInt() ?? 0,
       );
 
   String render({int maxTokens = 800}) {
@@ -154,4 +162,5 @@ const Set<String> workingStateFields = {
   'extra',
   'checklists',
   'folded_sequence',
+  'verbatim_sequence',
 };

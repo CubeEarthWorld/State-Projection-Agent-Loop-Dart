@@ -137,19 +137,21 @@ void main() {
       expect(cap.specText(), contains('demo.read@1'));
     });
 
-    test('api schema shape', () {
+    test('tool spec shape', () {
       final cap = Capability.fromDict(
         {'name': 'demo.op'},
         handler: (Map<String, Object?> args) => args['x'],
       );
-      final schema = cap.apiSchema();
-      expect(schema['type'], equals('function'));
+      final spec = cap.toolSpec();
+      // Provider-neutral: name / description / parameters and nothing else.
+      // No vendor envelope belongs in the core - rendering the OpenAI
+      // "function" wrapper or Anthropic's "input_schema" is the adapter's
+      // job, so a new provider costs a few lines there and nothing here.
+      expect(spec.keys.toSet(), equals({'name', 'description', 'parameters'}));
       // dots are encoded ("__") for provider-safe function names — most
       // native-function-calling providers (OpenAI included) reject "."
-      final fn = schema['function'] as Map;
-      expect(fn['name'], equals('demo__op'));
-      expect(fn['name'], equals(cap.apiName));
-      expect(fn, contains('parameters'));
+      expect(spec['name'], equals('demo__op'));
+      expect(spec['name'], equals(cap.apiName));
     });
 
     test('api name round-trips through registry', () {

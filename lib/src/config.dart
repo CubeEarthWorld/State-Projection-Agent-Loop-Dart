@@ -67,6 +67,13 @@ class DiscoveryConfig {
       };
 }
 
+/// History renders in tiers measured from a verbatim point that moves in
+/// steps (Session._stepTiers): the newest `fullWindow` messages are verbatim
+/// once the tail grows past four times that; before the point, the next
+/// `compressedWindow` messages are compressed (tool results masked to one
+/// line unless they failed or report an error, assistant text head+tail),
+/// the next `summaryWindow` are one-line summaries, older ones are dropped.
+/// The user's own messages are never compressed or dropped.
 class CompressionConfig {
   CompressionConfig({
     this.fullWindow = 6,

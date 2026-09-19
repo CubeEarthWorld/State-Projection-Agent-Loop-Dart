@@ -1,13 +1,12 @@
 // What connects a session to the world around it: cross-session memory,
-// listing runs, SKILL.md directories, workspace instruction files, MCP
+// listing runs, SKILL.md directories, workspace instruction files.
 // servers.
 import 'dart:io';
 
-import 'package:state_projection_loop/src/builtin/mcp.dart' show contract;
 import 'package:state_projection_loop/state_projection_loop.dart';
+import 'package:state_projection_loop/native.dart';
 import 'package:test/test.dart';
 
-import '../util.dart';
 
 Directory temp(String prefix) {
   final dir = Directory.systemTemp.createTempSync(prefix);
@@ -116,56 +115,6 @@ void main() {
     test('no files means no message', () {
       expect(InstructionsSection(temp('spal_empty_').path).render(TurnContext(config: Config(), registry: Registry())),
           isEmpty);
-    });
-  });
-
-  group('mcp', () {
-    late McpProvider provider;
-    setUp(() => provider = McpProvider('fake', ['dart', 'run', 'test/fake_mcp_server.dart']));
-    tearDown(() => provider.close());
-
-    test('listed tools become capabilities with the annotated contract', () async {
-      final registry = Registry();
-      registry.attachProvider(provider, refresh: false);
-      await provider.refresh(registry);
-      final echo = registry.get('mcp.fake.echo')!;
-      final delete = registry.get('mcp.fake.delete_all')!;
-      expect([for (final e in echo.effects) (e.kind, e.resource)], [('read', 'mcp:*')]);
-      expect(echo.execution.retrySafety, 'idempotent');
-      expect([for (final e in delete.effects) (e.kind, e.resource)], [('external', 'mcp:*')]);
-      expect(delete.execution.retrySafety, 'never_retry');
-      expect(echo.category, 'mcp/fake');
-    });
-
-    test('a session can call an mcp tool and sees its errors', () async {
-      final registry = Registry();
-      registry.attachProvider(provider, refresh: false);
-      await provider.refresh(registry);
-      final session = Session(
-        ScriptedLLM([
-          DecisionStep(ScriptedLLM.calls([('mcp.fake.echo', {'text': 'hi'}), ('mcp.fake.echo', {'text': 'boom'})])),
-          const TextStep('done'),
-        ]),
-        registry: registry,
-        policy: allowAll(),
-        builtins: const [],
-      );
-      await session.send('go');
-      final seen = observations(session);
-      expect(seen[0], 'echo: hi');
-      expect(seen[1], contains('echo refused'));
-    }, timeout: const Timeout(Duration(minutes: 2)));
-
-    test('absent annotations are the most restrictive contract', () {
-      void check(Map<String, Object?> annotations, String kind, String safety) {
-        final (effects, retrySafety) = contract(annotations);
-        expect(effects, [{'kind': kind, 'resource': 'mcp:*'}]);
-        expect(retrySafety, safety);
-      }
-
-      check({}, 'external', 'never_retry');
-      check({'readOnlyHint': true}, 'read', 'check_then_retry');
-      check({'destructiveHint': false, 'idempotentHint': true}, 'write', 'idempotent');
     });
   });
 }

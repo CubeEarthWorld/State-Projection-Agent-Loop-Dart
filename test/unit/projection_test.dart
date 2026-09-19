@@ -114,7 +114,7 @@ void main() {
           capabilityDict('demo.cand', summary: 'a somewhat long description of the tool'));
       final projection = defaultProjection(reg);
       final turn = makeTurn(registry: reg, candidates: [ScoredTool(tool: cap, score: 1.0)]);
-      final msgs = projection.render(turn, apiTools: [cap.apiSchema()]);
+      final msgs = projection.render(turn, apiTools: [cap.toolSpec()]);
       final last = msgs.last.content.toString();
       expect(last, contains('schemas sent natively'));
       expect(last, isNot(contains('a somewhat long description')));
@@ -279,7 +279,7 @@ void main() {
           .render(makeTurn(registry: reg, ledger: ledger, runId: runId, window: 400));
       final withSchema = projection.render(
         makeTurn(registry: reg, ledger: ledger, runId: runId, window: 400),
-        apiTools: [cap.apiSchema()],
+        apiTools: [cap.toolSpec()],
       );
       expect(estimateTokens(withSchema), lessThanOrEqualTo(estimateTokens(withoutSchema)));
     });
@@ -340,12 +340,12 @@ void main() {
     }
 
     List<Message> render(InMemoryLedger ledger, String runId,
-        {int? fullWindow, int? compressedWindow, int? summaryWindow}) {
+        {int? compressedWindow, int? summaryWindow, int? verbatimSequence}) {
       final turn = makeTurn(ledger: ledger, runId: runId);
       final cfg = turn.config.compression;
-      if (fullWindow != null) cfg.fullWindow = fullWindow;
       if (compressedWindow != null) cfg.compressedWindow = compressedWindow;
       if (summaryWindow != null) cfg.summaryWindow = summaryWindow;
+      if (verbatimSequence != null) turn.workingState.verbatimSequence = verbatimSequence;
       return HistorySection().render(turn);
     }
 
@@ -377,9 +377,11 @@ void main() {
           equals(['user', 'assistant', 'tool', 'tool']));
     });
 
-    test('age-based exclusion never orphans a result', () {
+    test('tier exclusion never orphans a result', () {
       // The oldest events fall out of the window one at a time; the cut must
-      // not land between a decision and its results.
+      // not land between a decision and its results. With the point after
+      // everything, the decision is 6 messages before it and its result 5:
+      // compressedWindow=2 + summaryWindow=3 keeps the result but not the decision.
       final ledger = InMemoryLedger();
       const runId = 'run_test';
       decision(ledger, runId, ['c0']);
@@ -387,37 +389,53 @@ void main() {
       for (var i = 0; i < 4; i++) {
         ledger.append(runId, 'user_input', {'text': 'later $i'});
       }
-      final msgs = render(ledger, runId, fullWindow: 1, compressedWindow: 2, summaryWindow: 4);
+      final msgs = render(ledger, runId, compressedWindow: 2, summaryWindow: 3, verbatimSequence: 7);
       expect(msgs.any((m) => m.role == 'assistant' && m.toolCalls.isNotEmpty), isFalse);
       expect(msgs.any((m) => m.role == 'tool'), isFalse);
     });
   });
-  group('fidelity by age', () {
-    // Older events are rendered at reduced fidelity. Only the most recent
-    // window is verbatim; this is where compressText and summarizeText enter
-    // the projection, and it was untested in this port.
-    test('compressed for older', () {
+  group('fidelity by distance from the verbatim point', () {
+    (InMemoryLedger, String) longConversation(int turns) {
       final ledger = InMemoryLedger();
       const runId = 'run_test';
-      for (var i = 0; i < 30; i++) {
+      for (var i = 0; i < turns; i++) {
         ledger.append(runId, 'user_input', {'text': 'msg $i ${'pad ' * 50}'});
-        ledger.append(runId, 'model_response', {'text': 'reply $i ${'pad ' * 50}'});
+        ledger.append(runId, 'model_response',
+            {'text': [for (var j = 0; j < 120; j++) 'reply $i line $j'].join('\n')});
       }
-      final msgs = HistorySection().render(makeTurn(ledger: ledger, runId: runId));
-      final first = msgs.first.content.toString();
-      expect(first.contains('omitted') || first.length < 500, isTrue);
+      return (ledger, runId);
+    }
+
+    test('before the point assistant text is compressed then summarized', () {
+      final (ledger, runId) = longConversation(70);
+      final turn = makeTurn(ledger: ledger, runId: runId);
+      turn.workingState.verbatimSequence = 2 * 69 + 1; // the last turn is the tail
+      final replies = [
+        for (final m in HistorySection().render(turn)) if (m.role == 'assistant') m.content.toString(),
+      ];
+      expect('\n'.allMatches(replies.last).length, 119, reason: 'the tail is verbatim');
+      expect(replies[replies.length - 2], contains('omitted'), reason: 'just before the point: head and tail');
+      expect(replies.first, allOf(startsWith('reply '), contains('  [120 lines, ')), reason: 'far before: one line');
     });
 
-    test('summary for old', () {
-      final ledger = InMemoryLedger();
-      const runId = 'run_test';
-      for (var i = 0; i < 70; i++) {
-        ledger.append(runId, 'user_input',
-            {'text': 'message number $i with some content ${'pad ' * 30}'});
-        ledger.append(runId, 'model_response', {'text': 'reply $i ${'pad ' * 30}'});
-      }
+    test('the user is never compressed and the oldest are dropped', () {
+      final (ledger, runId) = longConversation(100);
+      final turn = makeTurn(ledger: ledger, runId: runId);
+      turn.workingState.verbatimSequence = 2 * 99 + 1;
+      final msgs = HistorySection().render(turn);
+      final users = [for (final m in msgs) if (m.role == 'user') m.content.toString()];
+      expect(users.length, 100);
+      expect(users.every((u) => u.endsWith('pad ')), isTrue);
+      // windows count messages of every role: 24 compressed and 60 summarized
+      // messages hold 12 and 30 assistant replies, plus the verbatim tail
+      expect(msgs.where((m) => m.role == 'assistant').length, 12 + 30 + 1);
+    });
+
+    test('without a verbatim point everything is verbatim', () {
+      final (ledger, runId) = longConversation(30);
       final msgs = HistorySection().render(makeTurn(ledger: ledger, runId: runId));
-      expect(msgs.first.content.toString(), contains('chars]'));
+      expect(msgs.where((m) => m.role == 'assistant').every((m) => '\n'.allMatches(m.content.toString()).length == 119),
+          isTrue);
     });
 
     test('a part list passes through instead of being stringified', () {

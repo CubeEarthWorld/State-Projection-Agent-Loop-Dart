@@ -15,7 +15,8 @@
 library;
 
 import 'dart:convert';
-import 'dart:io';
+
+import 'fs.dart';
 
 import 'ids.dart';
 import 'messages.dart';
@@ -191,27 +192,27 @@ class InMemoryLedger implements EventLedger {
 /// entire point — `Session.resume` reads this back to restore a
 /// `waitingForApproval` run.
 class JsonlLedger implements EventLedger {
-  JsonlLedger(String directory) : directory = Directory(directory) {
-    this.directory.createSync(recursive: true);
+  JsonlLedger(this.directory) {
+    _fs.createDir(directory);
   }
 
-  final Directory directory;
+  /// Directory path. A `dart:io` object here would drag the whole
+  /// runtime onto native-only platforms; see `fs.dart`.
+  final String directory;
+  final FileSystem _fs = requireFileSystem('The JSONL ledger');
   final Map<String, int> _lastSeq = {};
 
-  File _path(String runId) => File('${directory.path}/$runId.jsonl');
+  String _path(String runId) => joinPath(directory, '$runId.jsonl');
 
-  File _snapshotPath(String runId) =>
-      File('${directory.path}/$runId.snapshot.json');
+  String _snapshotPath(String runId) =>
+      joinPath(directory, '$runId.snapshot.json');
 
   int _seq(String runId) {
     final cached = _lastSeq[runId];
     if (cached != null) return cached;
     var n = 0;
-    final path = _path(runId);
-    if (path.existsSync()) {
-      for (final line in path.readAsLinesSync()) {
-        if (line.trim().isNotEmpty) n++;
-      }
+    for (final line in _fs.readLines(_path(runId))) {
+      if (line.trim().isNotEmpty) n++;
     }
     _lastSeq[runId] = n;
     return n;
@@ -220,17 +221,14 @@ class JsonlLedger implements EventLedger {
   @override
   Event append(String runId, String type, Map<String, Object?> data) {
     final event = _newEvent(runId, _seq(runId) + 1, type, data);
-    _path(runId).writeAsStringSync('${event.toLine()}\n',
-        mode: FileMode.append, encoding: utf8);
+    _fs.appendString(_path(runId), '${event.toLine()}\n');
     _lastSeq[runId] = event.sequence;
     return event;
   }
 
   @override
   Iterable<Event> iterRun(String runId, {int after = 0}) sync* {
-    final path = _path(runId);
-    if (!path.existsSync()) return;
-    for (final rawLine in path.readAsLinesSync()) {
+    for (final rawLine in _fs.readLines(_path(runId))) {
       final line = rawLine.trim();
       if (line.isEmpty) continue;
       final event = Event.fromLine(line);
@@ -250,16 +248,16 @@ class JsonlLedger implements EventLedger {
       'state': snapshot.state,
     };
     final target = _snapshotPath(snapshot.runId);
-    final tmp = File('${target.path}.tmp');
-    tmp.writeAsStringSync(dumps(payload), encoding: utf8);
-    tmp.renameSync(target.path);
+    final tmp = '$target.tmp';
+    _fs.writeString(tmp, dumps(payload));
+    _fs.rename(tmp, target);
   }
 
   @override
   Snapshot? loadSnapshot(String runId) {
     final path = _snapshotPath(runId);
-    if (!path.existsSync()) return null;
-    final d = (jsonDecode(path.readAsStringSync()) as Map).cast<String, Object?>();
+    if (!_fs.exists(path)) return null;
+    final d = (jsonDecode(_fs.readString(path)) as Map).cast<String, Object?>();
     return Snapshot(
       runId: d['run_id'] as String,
       sequence: (d['sequence'] as num).toInt(),
@@ -272,9 +270,9 @@ class JsonlLedger implements EventLedger {
   List<RunSummary> listRuns() {
     const suffix = '.snapshot.json';
     return _summaries([
-      for (final f in directory.listSync().whereType<File>())
-        if (f.path.endsWith(suffix))
-          if (loadSnapshot(f.uri.pathSegments.last.substring(0, f.uri.pathSegments.last.length - suffix.length))
+      for (final name in _fs.listFiles(directory))
+        if (name.endsWith(suffix))
+          if (loadSnapshot(name.substring(0, name.length - suffix.length))
               case final snapshot?)
             snapshot,
     ]);

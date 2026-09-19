@@ -29,22 +29,19 @@ import 'serialization.dart';
 
 const String finishName = 'finish';
 
-final Map<String, Object?> finishSchema = {
-  'type': 'function',
-  'function': {
-    'name': finishName,
-    'description':
-        'Finish the job and return the final result. Call this ALONE — never combined with '
-            'other tool calls in the same decision; a decision that does both is rejected.',
-    'parameters': {
-      'type': 'object',
-      'properties': {
-        'result': {
-          'description': 'The final result: string, object, or artifact reference.',
-        },
+final Map<String, Object?> finishSpec = {
+  'name': finishName,
+  'description':
+      'Finish the job and return the final result. Call this ALONE - never combined with '
+          'other tool calls in the same decision; a decision that does both is rejected.',
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'result': {
+        'description': 'The final result: string, object, or artifact reference.',
       },
-      'required': ['result'],
     },
+    'required': ['result'],
   },
 };
 

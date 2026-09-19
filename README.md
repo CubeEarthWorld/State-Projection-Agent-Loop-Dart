@@ -29,6 +29,13 @@ tests. Talking to a real model — OpenAI, Anthropic, DeepSeek, a local
 server, anything — is entirely your own adapter, implementing that
 interface however you like.
 
+Tool schemas are provider-neutral too. `Capability.toolSpec()` returns plain
+`{name, description, parameters}` (JSON Schema) and nothing else — no
+vendor envelope. Rendering that into OpenAI's `{"type": "function", ...}`
+wrapper, Anthropic's `input_schema`, or a text protocol is the adapter's
+job, so supporting a new provider costs a few lines in your adapter and
+zero changes in the runtime.
+
 ## Architecture
 
 ```
@@ -69,9 +76,27 @@ dependencies:
     path: ../State-Projection-Agent-Loop-Dart   # or a git/pub dependency
 ```
 
-The only runtime dependency is `package:crypto` (used for the deterministic
-`HashingEmbedding`). JSON Schema validation is a self-contained mini
-validator with no external dependency.
+**There are no runtime dependencies at all.** JSON Schema validation is a
+self-contained mini validator, and the one hash the runtime needs (FNV-1a,
+shared byte for byte with the Python port) is a dozen lines in
+`lib/src/hashing.dart`.
+
+### Platforms
+
+The core runs everywhere Dart runs, web included: nothing under `lib/src/`
+imports `dart:io` except the conditional filesystem implementation behind
+`lib/src/fs.dart`. File-backed persistence (`JsonlLedger`, an `ArtifactStore`
+with a `directory`, a `JsonlMemoryStore` with a path) throws
+`UnsupportedError` where there is no filesystem; leave those unset and
+everything stays in memory.
+
+The parts that genuinely need an operating system — on-disk skills and
+the filesystem/shell toolkit — are not in the main library. Import them separately, on native platforms only:
+
+```dart
+import 'package:state_projection_loop/state_projection_loop.dart';
+import 'package:state_projection_loop/native.dart'; // VM / Flutter only
+```
 
 ## Differences from the Python original
 
@@ -291,15 +316,16 @@ via `Session(sections: ...)` or `session.addSection(...)`.
 | Loop guard | `limits.max_repeats` (3; `0` off) | An identical call that failed identically, or returned the same result, `max_repeats` times within the last `limits.repeat_window` (8) calls is not executed again. Pure reads may still be polled. |
 | Structured job output | `result_schema` | In job mode `finish(result)` is validated against the JSON Schema and bounced back on failure. |
 | Observers | `Session(onEvent: fn)` | Fires after every ledger append; read-only, a throwing observer is ignored. |
-| Compaction | `compaction.trigger_ratio` (`0` off) | One extra model call folds old history into `WorkingState` as a schema-validated JSON delta (`state_folded` keeps the pre-fold state); folded events render as summaries. |
+| Compression | `compression.*` (always on) | History renders in tiers by distance from a verbatim point that moves in steps, so the prompt prefix stays byte-identical between steps (prompt caches hit); old tool results are masked to one line unless they failed, the user's words are never touched. See [docs/compression.md](docs/compression.md). |
+| Compaction | `compaction.trigger_ratio` (`0` off) | One extra model call folds the history before the verbatim point into `WorkingState` as a schema-validated, grounding-checked JSON delta (`state_folded` keeps the pre-fold state). |
 | Skills | `skillCapability(name, text, summary: ...)` | A skill is a capability `skill.<name>.load`, so it rides the TOC, candidates and `meta.tool.find`. |
-| Toolkits | `installToolkits(registry, Directory(root), shell: true)` | Root-confined `filesystem.file.*` and `shell.command.run`; never installed unless you ask. |
+| Toolkits | `installToolkits(registry, root, shell: true)` (via `native.dart`) | Root-confined `filesystem.file.*` and `shell.command.run`; never installed unless you ask. |
 
 ```dart
 final session = Session(llm, builtins: ['meta', 'checklist', 'ask'], onEvent: print,
     config: Config.fromDict({'compaction': {'trigger_ratio': 0.8}}));
 session.registry.register(skillCapability('deploy', deploySteps, summary: 'How to deploy'));
-installToolkits(session.registry, Directory('./workspace'));
+installToolkits(session.registry, './workspace'); // needs native.dart
 
 var reply = await session.send('Release the service');
 if (session.run.state == 'WAITING_FOR_USER') {

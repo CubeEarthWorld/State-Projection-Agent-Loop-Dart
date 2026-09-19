@@ -97,10 +97,10 @@ void main() {
     test('a new store recovers a persisted artifact', () {
       final dir = Directory.systemTemp.createTempSync('spal_art_');
       addTearDown(() => dir.deleteSync(recursive: true));
-      final first = ArtifactStore('run_1', directory: dir);
+      final first = ArtifactStore('run_1', directory: dir.path);
       final record = first.put('payload ' * 500, source: 'demo.tool');
 
-      final second = ArtifactStore('run_1', directory: dir);
+      final second = ArtifactStore('run_1', directory: dir.path);
       expect(second.exists(record.id), isTrue);
       expect(second.peek(record.id), contains('payload'));
     });
@@ -108,11 +108,11 @@ void main() {
     test('a recovered artifact resolves to the value that was stored', () {
       final dir = Directory.systemTemp.createTempSync('spal_art_');
       addTearDown(() => dir.deleteSync(recursive: true));
-      final record = ArtifactStore('run_1', directory: dir).put({
+      final record = ArtifactStore('run_1', directory: dir.path).put({
         'rows': [1, 2],
       }, source: 'demo.tool');
 
-      final second = ArtifactStore('run_1', directory: dir);
+      final second = ArtifactStore('run_1', directory: dir.path);
       expect(
           second.resolveArgs({
             'data': {r'$artifact': record.id},
@@ -128,9 +128,9 @@ void main() {
     test('another run still cannot see it', () {
       final dir = Directory.systemTemp.createTempSync('spal_art_');
       addTearDown(() => dir.deleteSync(recursive: true));
-      final first = ArtifactStore('run_1', directory: dir);
+      final first = ArtifactStore('run_1', directory: dir.path);
       final record = first.put('payload', source: 'demo.tool');
-      final other = ArtifactStore('run_2', directory: dir);
+      final other = ArtifactStore('run_2', directory: dir.path);
       expect(other.exists(record.id), isFalse);
       expect(other.peek(record.id), contains('unknown artifact'));
     });

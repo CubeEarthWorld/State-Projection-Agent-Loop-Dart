@@ -6,11 +6,13 @@
 /// Validate → Authorize → Execute → Record → Continue/Wait/Complete.
 library;
 
+// skillCapability, loadSkills and installToolkits are NOT exported here:
+// each needs `dart:io` (a real directory, or the shell), and
+// exporting them would make this library native-only for everyone. They
+// live in `package:state_projection_loop/native.dart`.
+
 export 'src/artifacts.dart' show ArtifactStore, ArtifactRecord, ref, isRef, refKey;
 export 'src/builtin/builtin.dart' show installBuiltins, defaultBuiltins, builtinPacks;
-export 'src/builtin/mcp.dart' show McpProvider;
-export 'src/builtin/skills.dart' show skillCapability, loadSkills;
-export 'src/builtin/toolkits.dart' show installToolkits;
 export 'src/compaction.dart' show foldSchema, foldInstructions, parseFoldReply, applyFoldDelta;
 export 'src/checklists.dart' show ChecklistStore, checklistStatuses, checklistContextModes;
 export 'src/capability.dart'
@@ -58,7 +60,7 @@ export 'src/llm.dart'
         extractFinish,
         parseTextToolCalls,
         finishName,
-        finishSchema;
+        finishSpec;
 export 'src/messages.dart'
     show Decision, Message, ToolCall, Usage, kSystem, kUser, kAssistant, kObservation, newCallId;
 export 'src/policy.dart'
