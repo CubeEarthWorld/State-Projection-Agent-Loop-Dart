@@ -589,8 +589,14 @@ class Session {
   Future<bool> _fold(TurnContext ctx, List<Message> messages) async {
     final ratio = config.compaction.triggerRatio;
     if (ratio <= 0) return false;
+    // The ratio applies to the room the render actually has for messages
+    // and schemas: the window less the reserved output. Measured against the
+    // whole window it is unreachable once the reserve exceeds the slack, and
+    // measured with the reserve counted it fires every turn of a small window.
+    final cfg = config.projection;
+    final room = cfg.windowTokens - cfg.reservedOutputTokens - cfg.providerOverheadTokens;
     final used = estimateTokens(messages) + projection.schemaTokens(ctx.apiTools);
-    if (used <= ratio * config.projection.windowTokens) return false;
+    if (used <= ratio * room) return false;
     // Fold from the ledger, never from the projection: what masking cleared
     // from the prompt is exactly what a fold must still read. The region is
     // everything before the verbatim point, so the fold changes only what

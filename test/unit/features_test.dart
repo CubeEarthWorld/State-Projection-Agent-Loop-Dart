@@ -201,6 +201,30 @@ void main() {
       expect((folded.data['before'] as Map)['confirmed_facts'], isEmpty);
     });
 
+    test('trigger counts the reserved output the render budgets', () async {
+      // window 2000, ratio 0.75: the render shrinks messages to fit under the
+      // 976 left after the 1024 reserved output, so a ratio of the whole
+      // window (1500) could never be reached and the fold was unreachable.
+      final session = Session(
+        ScriptedLLM([
+          const TextStep('r1'),
+          const TextStep('r2'),
+          const TextStep('r3'),
+          CallbackStep((messages, tools) => '{"facts_add": ["seen"]}'),
+          const TextStep('r4'),
+        ]),
+        config: Config.fromDict({
+          'projection': {'window_tokens': 2000},
+          'compaction': {'trigger_ratio': 0.75},
+        }),
+        policy: allowAll(),
+      );
+      for (final m in ['m1', 'm2', 'm3', 'm4']) {
+        await session.send('$m ${'word ' * 120}');
+      }
+      expect(session.workingState.confirmedFacts, ['seen']);
+    });
+
     test('an invalid delta is skipped and logged, never merged', () async {
       final session = Session(
         ScriptedLLM([
