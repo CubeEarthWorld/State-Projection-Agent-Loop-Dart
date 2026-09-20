@@ -35,6 +35,7 @@ const List<String> eventTypes = [
   'approval_resolved',
   'run_state_changed',
   'branch_created',
+  'run_spawned',
   'notice',
   'observation',
   'checkpoint',

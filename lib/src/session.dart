@@ -185,6 +185,10 @@ class Session {
   late BudgetState budget;
   late final LinkedHashSet<String> _active;
   bool _interrupted = false;
+
+  /// Sub-agent sessions a spawn handler is currently driving, so [interrupt]
+  /// reaches them. Registered and removed by the handler.
+  final List<Session> children = [];
   int _idleTurns = 0;
   bool _budgetGraceUsed = false;
   bool _locked = false;
@@ -219,11 +223,22 @@ class Session {
 
   /// Stop after the current step. A model call still waiting for the
   /// provider is abandoned outright; a tool that is already running
-  /// finishes, so its outcome is recorded.
+  /// finishes, so its outcome is recorded. Running sub-agents are
+  /// interrupted too, and end up `CANCELLED` in the ledger.
   void interrupt() {
     _interrupted = true;
     final inflight = _inflight;
     if (inflight != null && !inflight.isCompleted) inflight.complete();
+    for (final child in [...children]) {
+      child.interrupt();
+    }
+  }
+
+  /// End this run for good. For abandoning a run parked on an approval or a
+  /// question — [interrupt] only stops a loop that is moving.
+  void cancel([String reason = 'cancelled']) {
+    run.cancel(reason);
+    _snapshot();
   }
 
   /// Put out-of-band text into the run's context.

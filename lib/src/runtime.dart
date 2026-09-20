@@ -281,8 +281,9 @@ class Runtime {
   }
 
   Future<ToolResult> _run(Capability capability, Map<String, Object?> args, ToolContext ctx,
-      Run run, ToolCall call, {Command? command, String? argsHash}) async {
-    final result = await _executeOne(capability, args, ctx, run, call, command: command);
+      Run run, ToolCall call, {Command? command, String? argsHash, String? resolution}) async {
+    final result =
+        await _executeOne(capability, args, ctx, run, call, command: command, resolution: resolution);
     _remember(capability, argsHash ?? _argsHash(args), result);
     return result;
   }
@@ -308,8 +309,10 @@ class Runtime {
     run.lastResolvedApproval = null;
 
     /// Runs the buffered read-only calls concurrently. True when one of them
-    /// parked the run on a question: like the sequential path, the rest of
-    /// the batch (from [idx]) waits for the answer.
+    /// parked the run: like the sequential path, the rest of the batch (from
+    /// [idx]) waits. A call parked on an approval it raised itself goes back
+    /// on the queue — it must be re-invoked to learn the decision, unlike a
+    /// question, which resumes with an answer.
     Future<bool> flush(int idx) async {
       if (buffer.isEmpty) return false;
       final flushed = await Future.wait([
@@ -317,8 +320,12 @@ class Runtime {
       ]);
       results.addAll(flushed);
       buffer.clear();
-      if (!flushed.any((r) => r.outcome == 'waiting_user')) return false;
-      run.pendingCalls = calls.sublist(idx);
+      if (!flushed.any((r) => waitingOutcomes.contains(r.outcome))) return false;
+      run.pendingCalls = [
+        for (final r in flushed)
+          if (r.outcome == 'waiting_approval') r.call,
+        ...calls.sublist(idx),
+      ];
       return true;
     }
 
@@ -375,8 +382,11 @@ class Runtime {
       } else {
         if (await flush(idx)) return ExecuteBatchResult(results: results, halted: true);
         results.add(await _run(capability, args, ctx, run, call, argsHash: argsHash));
-        if (results.last.outcome == 'waiting_user') {
-          run.pendingCalls = calls.sublist(idx + 1);
+        if (waitingOutcomes.contains(results.last.outcome)) {
+          // Inclusive for an approval the handler raised itself: resume
+          // re-invokes it with the decision.
+          final first = results.last.outcome == 'waiting_approval' ? idx : idx + 1;
+          run.pendingCalls = calls.sublist(first);
           return ExecuteBatchResult(results: results, halted: true);
         }
       }
@@ -411,6 +421,12 @@ class Runtime {
       final deniedName = deniedCommand?.capabilityName ?? firstCall.name;
       final rest = pending.skip(1).toList();
       run.pendingCalls = [];
+      if (deniedCommand != null && deniedCommand.attempts > 0) {
+        // The handler parked itself mid-flight; it has state to wind down
+        // and must hear the decision. A command that never ran must not
+        // start running now, which is the branch below.
+        return _resumeCommand(deniedCommand, run, ctx, policy, pending, 'denied');
+      }
       // Every parked call needs its own result: the denial cancels the rest
       // of the decision too, and a call left without one would take the whole
       // decision out of the projection.
@@ -440,7 +456,21 @@ class Runtime {
       // yet, so every call takes the normal path.
       return execute(pending, ctx, run, policy);
     }
-    final capability = registry.get(approved.capabilityName);
+    return _resumeCommand(approved, run, ctx, policy, pending, 'approved');
+  }
+
+  /// Runs the resolved command (reusing its `commandId`, so an approved
+  /// action keeps its idempotency key), then the rest of the batch.
+  Future<ExecuteBatchResult> _resumeCommand(
+    Command command,
+    Run run,
+    ToolContext ctx,
+    PolicyEngine policy,
+    List<ToolCall> pending,
+    String resolution,
+  ) async {
+    final firstCall = pending.first;
+    final capability = registry.get(command.capabilityName);
     final results = <ToolResult>[];
     if (capability == null) {
       results.add(ToolResult(
@@ -450,9 +480,15 @@ class Runtime {
         observation: 'Error: capability "${firstCall.name}" no longer registered.',
       ));
     } else {
-      results.add(await _run(capability, approved.arguments, ctx, run, firstCall, command: approved));
-      if (results.last.outcome == 'waiting_user') {
-        run.pendingCalls = pending.sublist(1);
+      results.add(await _run(capability, command.arguments, ctx, run, firstCall,
+          command: command, resolution: resolution));
+      if (waitingOutcomes.contains(results.last.outcome)) {
+        // Parked again (a second sub-agent approval): the call itself goes
+        // back on the queue when it must be re-invoked.
+        run.pendingCalls = [
+          if (results.last.outcome == 'waiting_approval') firstCall,
+          ...pending.sublist(1),
+        ];
         return ExecuteBatchResult(results: results, halted: true);
       }
     }
@@ -546,9 +582,10 @@ class Runtime {
     Run run,
     ToolCall call, {
     Command? command,
+    String? resolution,
   }) async {
     command ??= run.newCommand(capability.qualifiedName, args, capability.execution.retrySafety);
-    final callCtx = ctx.forCommand(command.id);
+    final callCtx = ctx.forCommand(command.id, resolution: resolution);
 
     final handler = capability.execution.handler;
     if (handler == null) {
@@ -632,8 +669,11 @@ class Runtime {
     for (var attempt = 0; attempt < attempts; attempt++) {
       command.attempts += 1;
       try {
-        final value = await _invoke(handler, capability, resolved, callCtx)
-            .timeout(Duration(milliseconds: (capability.execution.timeoutS * 1000).round()));
+        final limit = capability.execution.timeoutS;
+        final call0 = _invoke(handler, capability, resolved, callCtx);
+        final value = limit == null
+            ? await call0
+            : await call0.timeout(Duration(milliseconds: (limit * 1000).round()));
         if (value is Question) {
           // The command stays pending until Session.answer completes it.
           run.askQuestion(command, call.id, value);
@@ -642,6 +682,25 @@ class Runtime {
             outcome: 'waiting_user',
             error: 'question_pending',
             observation: 'Question pending: ${value.text}',
+            commandId: command.id,
+          );
+        }
+        if (value is ApprovalRequest) {
+          // The handler parked its own command (a sub-agent forwarding its
+          // child's approval). Same expiry and policy revision, so resolving
+          // here resolves there.
+          run.requestApproval(
+            command,
+            value.effects,
+            value.reason,
+            policyRevision: value.policyRevision,
+            expiresInS: value.expiresAt == null ? null : max(0.0, value.expiresAt! - nowSeconds()),
+          );
+          return ToolResult(
+            call: call,
+            outcome: 'waiting_approval',
+            error: 'approval_required',
+            observation: 'Approval required: ${value.reason}',
             commandId: command.id,
           );
         }

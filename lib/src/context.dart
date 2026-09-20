@@ -33,6 +33,7 @@ class ToolContext {
     this.store,
     this.search,
     this.commandId = '',
+    this.resolution,
     this.emit = _noEmit,
   }) : workingState = workingState ?? WorkingState();
 
@@ -45,6 +46,10 @@ class ToolContext {
   final ArtifactStore? store;
   final ToolSearch? search;
   final String commandId;
+  // "approved" / "denied" when this command is being re-invoked after an
+  // approval it raised itself by returning an ApprovalRequest; null on a
+  // first call. A handler that never parks never sees anything else.
+  final String? resolution;
   // Hands a chunk of the tool's progress output to the session's onDelta
   // observer, if any. Delivery only: nothing emitted reaches the ledger.
   final void Function(String text) emit;
@@ -54,7 +59,7 @@ class ToolContext {
   /// The handler-facing view of this context for one command. Spelled out
   /// rather than copied field-wise: `this` is usually a [TurnContext], and
   /// the point is to hand the handler a plain [ToolContext] instead.
-  ToolContext forCommand(String commandId) => ToolContext(
+  ToolContext forCommand(String commandId, {String? resolution}) => ToolContext(
         config: config,
         registry: registry,
         ledger: ledger,
@@ -64,6 +69,7 @@ class ToolContext {
         store: store,
         search: search,
         commandId: commandId,
+        resolution: resolution,
         emit: emit,
       );
 }

@@ -158,7 +158,10 @@ class CapabilityExecution {
   /// afterwards. Give any handler that can be slow an async body. (The
   /// Python package hands synchronous handlers to a worker thread, so this
   /// limitation is Dart's alone.)
-  final double timeoutS;
+  /// null means no wall clock at all. Only for a handler whose own budget
+  /// bounds it and whose work must not be abandoned half-done (spawn: a
+  /// timeout would strand sub-agents mid-run).
+  final double? timeoutS;
   final int retries;
   final String retrySafety;
   final bool resolveHandles;
@@ -334,7 +337,10 @@ class Capability {
       ),
       execution: CapabilityExecution(
         handler: handler,
-        timeoutS: exeD.dblOr('timeout_s', 30.0),
+        // An explicit null is "no timeout"; an absent key is the default.
+        timeoutS: exeD.containsKey('timeout_s')
+            ? (exeD['timeout_s'] as num?)?.toDouble()
+            : 30.0,
         retries: exeD.intOr('retries', 0),
         retrySafety: exeD.strOr('retry_safety', 'never_retry'),
         resolveHandles: exeD.boolOr('resolve_handles', true),

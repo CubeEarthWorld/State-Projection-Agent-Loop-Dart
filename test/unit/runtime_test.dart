@@ -422,6 +422,84 @@ void main() {
     });
   });
 
+  group('HandlerRaisedApproval', () {
+    // A handler may park its own command by returning an ApprovalRequest
+    // (what `meta.agent.spawn` does with a sub-agent's approval). Unlike a
+    // policy approval, which gates a call that has not run, this one is
+    // mid-flight: it must be re-invoked either way, so it can finish or wind
+    // down, and it learns the decision from `ctx.resolution`.
+    Registry registryFor(List<String?> seen) {
+      final reg = Registry();
+      reg.register(capabilityDict('demo.park', effects: [('external', '*')]), wantsCtx: true,
+          handler: (ToolContext ctx, Map<String, Object?> args) {
+        seen.add(ctx.resolution);
+        if (ctx.resolution == null) {
+          return ApprovalRequest(
+            id: 'apr_x',
+            commandId: ctx.commandId,
+            effects: [Effect(kind: 'write', resource: 'child')],
+            reason: 'the child wants to write',
+            policyRevision: 0,
+          );
+        }
+        return 'wound down: ${ctx.resolution}';
+      });
+      reg.register(capabilityDict('demo.after', effects: [('write', '*')]),
+          handler: (Map<String, Object?> args) => 'after ok');
+      return reg;
+    }
+
+    test('the parked call itself goes back on the queue', () async {
+      final seen = <String?>[];
+      final (runtime, turn, ctx, run, policy) = makeRuntime(registryFor(seen));
+      final calls = [
+        ToolCall(name: 'demo.park', arguments: {}),
+        ToolCall(name: 'demo.after', arguments: {}),
+      ];
+      final batch = await runBatch(runtime, calls, turn, ctx, run, policy);
+
+      expect(run.state, equals('WAITING_FOR_APPROVAL'));
+      expect(batch.halted, isTrue);
+      expect(run.pendingApproval!.reason, equals('the child wants to write'));
+      // Inclusive: a question resumes with an answer, this resumes by
+      // calling the handler again.
+      expect(run.pendingCalls.map((c) => c.name).toList(), equals(['demo.park', 'demo.after']));
+    });
+
+    for (final decision in ['approved', 'denied']) {
+      test('$decision re-invokes the handler with the resolution', () async {
+        final seen = <String?>[];
+        final (runtime, turn, ctx, run, policy) = makeRuntime(registryFor(seen));
+        await runBatch(runtime, [ToolCall(name: 'demo.park', arguments: {})], turn, ctx, run, policy);
+        run.resolveApproval(decision, currentPolicyRevision: policy.revision);
+        final batch = await runtime.resumePending(run, ctx, policy);
+
+        expect(seen, equals([null, decision]));
+        expect(batch.results.first.value, equals('wound down: $decision'));
+        expect(run.commands[batch.results.first.commandId]!.outcome, equals('ok'));
+      });
+    }
+
+    test('a policy approval that never ran is still just denied', () async {
+      // The re-invocation is only for a command with attempts: a call the
+      // policy stopped before it ran must not start running on denial.
+      final ran = <String>[];
+      final reg = Registry();
+      reg.register(capabilityDict('demo.write', effects: [('write', '*')]),
+          handler: (Map<String, Object?> args) {
+        ran.add('write');
+        return 'written';
+      });
+      final (runtime, turn, ctx, run, policy) = makeRuntime(reg, allowAll: false);
+      await runBatch(runtime, [ToolCall(name: 'demo.write', arguments: {})], turn, ctx, run, policy);
+      run.resolveApproval('denied', currentPolicyRevision: policy.revision);
+      final batch = await runtime.resumePending(run, ctx, policy);
+
+      expect(ran, isEmpty);
+      expect(batch.results.first.error, equals('approval_denied'));
+    });
+  });
+
   group('OutputPolicy', () {
     test('large result becomes artifact', () async {
       final reg = Registry();

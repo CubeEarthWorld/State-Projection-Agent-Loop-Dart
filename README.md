@@ -277,6 +277,17 @@ Session(llm, builtins: []);                  // nothing bundled
 installBuiltins(registry, ['spawn']);       // same operation on your own registry
 ```
 
+The `spawn` pack's `meta.agent.spawn` takes `tasks: [{task, kernel?,
+tool_scope?, model?, max_steps?, checklist_ids?}, ...]` — several in one call
+run concurrently (up to 8). A sub-agent is **an ordinary `Run` in the
+parent's ledger**: auditable, resumable with `resumeFromLedger`, visible to
+the parent's `onEvent` under its own `runId`. It cannot ask the user, but it
+can stop for approval — the request surfaces on the root session as an
+ordinary `WAITING_FOR_APPROVAL`, and `resolveApproval` + `resume` drives the
+child on, across a restart too. The parent's remaining token/cost budget is
+split between children and their usage charged back; `interrupt()` reaches
+them.
+
 `installBuiltins` is idempotent and a name the registry already resolves is
 left alone, so your own definition wins; an unknown pack name throws. Any
 **pinned** capability may carry `discovery.kernel_note`, one sentence shown

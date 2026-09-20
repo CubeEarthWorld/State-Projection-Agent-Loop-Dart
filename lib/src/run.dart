@@ -86,6 +86,10 @@ class Command {
       );
 }
 
+/// A pending approval. The policy raises one before a command runs; a
+/// handler may also *return* one to park its own command mid-flight (a
+/// sub-agent forwarding its child's approval), in which case the command is
+/// re-invoked on resolution with `ctx.resolution` set.
 class ApprovalRequest {
   ApprovalRequest({
     required this.id,
@@ -274,6 +278,12 @@ class Run {
     required int policyRevision,
     double? expiresInS,
   }) {
+    // One at a time, like [askQuestion]: concurrently executed read-only
+    // handlers can both raise one, and overwriting the first would lose it.
+    if (pendingApproval != null) {
+      throw RunStateError('Run $id is already waiting on approval ${pendingApproval!.id}; '
+          'resolve it before requesting another');
+    }
     final expiresAt = expiresInS != null ? nowSeconds() + expiresInS : null;
     final request = ApprovalRequest(
       id: newId('approval'),

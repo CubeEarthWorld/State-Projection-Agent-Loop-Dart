@@ -442,7 +442,12 @@ void main() {
         }),
       ]),
     );
-    expect(await session.invoke('meta.agent.spawn', {'task': 'work'}), 'done');
+    final entries = await session.invoke('meta.agent.spawn', {
+      'tasks': [
+        {'task': 'work'}
+      ]
+    }) as List;
+    expect((entries.single as Map)['result'], 'done');
     expect(seen.single, contains('meta__tool__find'));
     expect(seen.single, isNot(contains('planning__checklist__manage')));
   });
@@ -482,10 +487,15 @@ void main() {
     expect((session.checklists.execute('get', {'id': id}) as Map)['name'],
         'original');
     installBuiltins(session.registry, ['spawn']);
-    final result = await session.invoke('meta.agent.spawn', {
-      'task': 'work',
-      'checklist_ids': [id]
-    }) as Map;
+    final result = ((await session.invoke('meta.agent.spawn', {
+      'tasks': [
+        {
+          'task': 'work',
+          'checklist_ids': [id]
+        }
+      ]
+    }) as List)
+        .single) as Map;
     expect(result['result'], 'done');
     expect(
         (((result['checklists'] as Map)['checklists'] as List).first
