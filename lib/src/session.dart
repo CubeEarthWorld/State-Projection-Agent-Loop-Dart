@@ -13,6 +13,7 @@ import 'dart:collection';
 
 import 'artifacts.dart';
 import 'builtin/builtin.dart' show defaultBuiltins, installBuiltins;
+import 'builtin/meta.dart' show childSession;
 import 'checklists.dart';
 import 'compaction.dart';
 import 'config.dart';
@@ -40,6 +41,15 @@ class ConcurrencyError implements Exception {
 
   @override
   String toString() => 'ConcurrencyError: $message';
+}
+
+/// Why a run ended, from the last transition it recorded.
+String _lastReason(Session session) {
+  var reason = '';
+  for (final event in session.ledger.iterRun(session.run.id)) {
+    if (event.type == 'run_state_changed') reason = '${event.data['reason'] ?? ''}';
+  }
+  return reason;
 }
 
 EventLedger _makeLedger(Config config) {
@@ -151,6 +161,8 @@ class Session {
       this.ledger.append(
           run.id, 'run_state_changed', {'from': 'RUNNING', 'to': 'RUNNING', 'reason': 'created'});
       _snapshot();
+    } else {
+      _reattachBackground();
     }
   }
 
@@ -186,9 +198,14 @@ class Session {
   late final LinkedHashSet<String> _active;
   bool _interrupted = false;
 
-  /// Sub-agent sessions a spawn handler is currently driving, so [interrupt]
-  /// reaches them. Registered and removed by the handler.
+  /// This run's sub-agents, until they are collected. A blocking spawn adds
+  /// and removes them around its own command; a background one leaves them
+  /// here for the loop head to tend.
   final List<Session> children = [];
+
+  /// The future driving this session unattended (a background sub-agent).
+  /// null means nobody is running its loop right now.
+  Future<void>? driver;
   int _idleTurns = 0;
   bool _budgetGraceUsed = false;
   bool _locked = false;
@@ -234,9 +251,109 @@ class Session {
     }
   }
 
+  /// Stop every sub-agent at its next step boundary and wait for it.
+  ///
+  /// A parked child is `RUNNING` in the ledger with a snapshot at the
+  /// boundary it stopped at, so the next turn - or the next process - picks
+  /// it up. A host calls this before it exits.
+  Future<void> park() async {
+    for (final child in [...children]) {
+      child.interrupt();
+    }
+    for (final child in [...children]) {
+      if (child.driver != null) {
+        await child.driver!.catchError((Object _) {});
+      }
+      await child.park();
+      // The interrupt was ours and it has done its job. Leaving the flag set
+      // would eat the child's first step when it resumes.
+      child._interrupted = false;
+    }
+  }
+
+  /// Run this session's loop unattended: the one way a sub-agent moves
+  /// without its parent awaiting it. Fresh with [task], otherwise a resume.
+  /// A no-op unless the run is RUNNING and nobody drives it.
+  void drive([Object? task]) {
+    if (driver != null || run.state != 'RUNNING') return;
+    driver = () async {
+      try {
+        await (task != null ? runJob(task) : resume());
+      } catch (exc) {
+        // A driver must not lose its error.
+        if (!terminalStates.contains(run.state)) cancel('$exc');
+      } finally {
+        driver = null;
+      }
+    }();
+  }
+
+  void _cancelChildren(String reason) {
+    for (final child in [...children]) {
+      child.interrupt();
+      if (!terminalStates.contains(child.run.state)) child.cancel(reason);
+    }
+    children.clear();
+  }
+
+  /// Fail this run. Never leaves a sub-agent running behind it.
+  void _fail(String reason) {
+    _cancelChildren(reason);
+    run.fail(reason);
+  }
+
+  /// Collect and re-drive sub-agents, once per step.
+  ///
+  /// The loop head is the only safe place: it is always after a batch has
+  /// been applied and snapshotted and before the next projection, so a
+  /// notice can never land between an assistant's tool calls and their
+  /// results - a message sequence no provider accepts.
+  void _tendChildren() {
+    for (final child in [...children]) {
+      if (child.run.state == 'WAITING_FOR_USER') {
+        child.cancel('a sub-agent has no user to ask');
+      }
+      if (terminalStates.contains(child.run.state)) {
+        budget.noteUsage(child.budget.promptTokens, child.budget.completionTokens, config);
+        final detail = child.run.state == 'COMPLETED' ? '' : ' (${_lastReason(child)})';
+        notice(
+          '[runtime] sub-agent ${child.run.id} finished: ${child.run.state}$detail. '
+          'Call meta.agent.join(run_ids=["${child.run.id}"]) for its result.',
+          data: {'child_run_id': child.run.id},
+        );
+        children.remove(child);
+      } else {
+        child.drive();
+      }
+    }
+  }
+
+  /// After a restart, pick background sub-agents back up out of the ledger.
+  /// One already announced by a notice was collected; the rest are this
+  /// run's again, and the next loop head drives or reports them.
+  void _reattachBackground() {
+    final announced = <String>{
+      for (final e in ledger.iterRun(run.id))
+        if (e.type == 'notice' && e.data['child_run_id'] != null) e.data['child_run_id'] as String,
+    };
+    for (final event in ledger.iterRun(run.id)) {
+      if (event.type != 'run_spawned' || event.data['background'] != true) continue;
+      final command = run.commands[event.data['command_id']];
+      final specs = (command?.arguments['tasks'] as List?) ?? const [];
+      final ids = event.data['child_run_ids'] as List;
+      for (var i = 0; i < ids.length && i < specs.length; i++) {
+        final snapshot = ledger.loadSnapshot(ids[i] as String);
+        if (announced.contains(ids[i]) || snapshot == null) continue;
+        children.add(childSession(this, (specs[i] as Map).cast<String, Object?>(), 1,
+            restored: snapshot));
+      }
+    }
+  }
+
   /// End this run for good. For abandoning a run parked on an approval or a
   /// question — [interrupt] only stops a loop that is moving.
   void cancel([String reason = 'cancelled']) {
+    _cancelChildren(reason);
     run.cancel(reason);
     _snapshot();
   }
@@ -248,8 +365,8 @@ class Session {
   /// demand (`session.notice(await session.invoke('skill.foo.load'))`), a
   /// file that was attached. It renders as a system message, costs no turn
   /// and calls no model — what the *user* said goes through [send].
-  void notice(String text) {
-    ledger.append(run.id, 'notice', {'text': text});
+  void notice(String text, {Map<String, Object?> data = const {}}) {
+    ledger.append(run.id, 'notice', {'text': text, ...data});
   }
 
   void addSection(Section section, {String before = 'candidates'}) {
@@ -354,7 +471,14 @@ class Session {
     if (command == null) return null;
     final at = command.capabilityName.lastIndexOf('@');
     final capability = registry.get(at < 0 ? command.capabilityName : command.capabilityName.substring(0, at));
-    if (capability == null || !capability.effects.any((e) => e.kind == 'external')) return null;
+    // plannedEffects, not effects: a capability that declared none is
+    // treated as external everywhere else (policy, runtime), and it is
+    // exactly the one whose handler might have done something real without
+    // anyone noticing. Reading the raw list here reported it as safe to
+    // rewind past.
+    if (capability == null || !capability.plannedEffects.any((e) => e.kind == 'external')) {
+      return null;
+    }
     return '${capability.qualifiedName} (command ${command.id}) already ran and cannot be undone';
   }
 
@@ -439,10 +563,14 @@ class Session {
         _interrupted = false;
         ledger.append(run.id, 'run_state_changed',
             {'from': run.state, 'to': run.state, 'reason': 'interrupted'});
+        // Snapshot at the boundary we stopped at, so a parked sub-agent
+        // resumes here and not from an older step.
+        _snapshot();
         final text = _lastText(kAssistant);
         return text.isNotEmpty ? text : '[interrupted]';
       }
 
+      _tendChildren();
       final (budgetStop, budgetValue) = _enforceBudget();
       if (budgetStop) {
         _snapshot();
@@ -502,6 +630,20 @@ class Session {
       }
 
       if (decision.finish) {
+        // A run must never reach a terminal state with sub-agent work
+        // outstanding: that is how results go missing and how "stopped"
+        // sessions leave agents running. Collect whatever finished during
+        // the call first, so the only thing that bounces a finish is work
+        // that is genuinely unfinished.
+        _tendChildren();
+        if (children.isNotEmpty) {
+          final running = [for (final c in children) c.run.id].join(', ');
+          ledger.append(run.id, 'decision_validated',
+              {'ok': false, 'reason': 'background sub-agents still running: $running'});
+          notice('[runtime] finish(result) rejected: sub-agents $running are still running. '
+              'Call meta.agent.join to wait for them (cancel=true to stop them), then finish.');
+          continue;
+        }
         final schema = config.resultSchema;
         final error = schema == null ? null : validateValue(schema, decision.result);
         if (error != null) {
@@ -559,7 +701,7 @@ class Session {
         ledger.append(run.id, 'model_call_failed', {'attempt': attempt, 'error': error});
         if (attempt > cfg.retries) {
           if (config.mode == 'job' && !terminalStates.contains(run.state)) {
-            run.fail('model_error: $error');
+            _fail('model_error: $error');
           }
           _snapshot();
           rethrow;
@@ -650,6 +792,12 @@ class Session {
       'before': before,
       'delta': delta,
     });
+    // A fold is the one place the working state changes without a tool call
+    // behind it, and the event records `before` + `delta` rather than the
+    // result — replaying it would need the transcript the grounding check
+    // ran against. Snapshot instead, or a restart before the next one
+    // silently loses everything the fold merged.
+    _snapshot();
     return true;
   }
 
@@ -682,7 +830,7 @@ class Session {
     }
     if (config.mode == 'job') {
       if (!terminalStates.contains(run.state)) {
-        run.fail('budget_stop: $reason');
+        _fail('budget_stop: $reason');
       }
       return (true, run.result ?? _lastText(kAssistant));
     }
@@ -816,7 +964,7 @@ class Session {
     final oldRunId = run.id;
     ledger.append(oldRunId, 'rewound', {'to_turn': toTurn, 'kept_messages': keptRenderable.length});
     if (!terminalStates.contains(run.state)) {
-      run.cancel('rewound to turn $toTurn');
+      cancel('rewound to turn $toTurn');
     }
 
     run = Run(newId('run'), sessionId, ledger);

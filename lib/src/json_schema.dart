@@ -135,11 +135,24 @@ String? validateValue(Map<String, Object?> schema, Object? value, [String path =
       }
     }
   }
-  if (value is List && schema['items'] is Map) {
-    final itemSchema = (schema['items'] as Map).cast<String, Object?>();
-    for (var i = 0; i < value.length; i++) {
-      final err = validateValue(itemSchema, value[i], '$where[$i]');
-      if (err != null) return err;
+  if (value is List) {
+    // Length before contents: the arguments are model-controlled, and
+    // walking a million items to then reject the array on a handler's own
+    // cap blocks the loop every other session shares.
+    final maxItems = schema['maxItems'];
+    if (maxItems is num && value.length > maxItems) {
+      return '$where: more than maxItems $maxItems entries';
+    }
+    final minItems = schema['minItems'];
+    if (minItems is num && value.length < minItems) {
+      return '$where: fewer than minItems $minItems entries';
+    }
+    if (schema['items'] is Map) {
+      final itemSchema = (schema['items'] as Map).cast<String, Object?>();
+      for (var i = 0; i < value.length; i++) {
+        final err = validateValue(itemSchema, value[i], '$where[$i]');
+        if (err != null) return err;
+      }
     }
   }
   final anyOf = schema['anyOf'];

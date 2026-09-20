@@ -24,7 +24,8 @@ one fixture here that is authored by hand rather than generated.
 ## Bundled tool definitions
 
 `tools/*.json` holds the definitions of the capabilities this package
-bundles (`meta.*`, `state.*`, `planning.checklist.manage`, `meta.agent.spawn`).
+bundles (`meta.*`, `state.*`, `planning.checklist.manage`,
+`meta.agent.spawn`, `meta.agent.join`).
 They are data, shared byte for byte with the Python package, where they live
 as package data under `src/state_projection_loop/builtin/defs/`. Handlers
 stay in code — they are the part that genuinely differs per language.
@@ -39,3 +40,9 @@ dart run tool/generate_defs.dart
 That writes `lib/src/builtin/defs.g.dart`, which is committed and checked by
 CI. To change a definition: edit it in the Python repository, copy
 `spec/tools/` across, regenerate, and run both test suites.
+
+Two ledger keys are part of the cross-language contract as much as the
+schemas are: `run_spawned.background` says whether a sub-agent run was
+started in the background, and `notice.child_run_id` marks the one that
+announced its completion — together they are how a restarted parent tells
+which children it still owes a result.

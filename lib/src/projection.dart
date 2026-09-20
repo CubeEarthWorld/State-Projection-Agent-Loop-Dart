@@ -266,13 +266,22 @@ class HistorySection extends Section {
   }
 
   @override
+  @override
   List<Message>? shrink(TurnContext ctx, List<Message> current) {
+    // Drop the oldest message that is not the user's, plus whatever
+    // observations answer it. The user's turns go last, not never: the
+    // window is a hard limit the provider enforces, so when they are all
+    // that is left one still has to go. Before this, the oldest message
+    // went whatever its role, and a long session evicted the original
+    // instruction while assistant chatter around it stayed.
     if (current.isEmpty) return null;
-    var i = 1;
-    while (i < current.length && current[i].role == kObservation) {
-      i++;
+    final first = current.indexWhere((m) => m.role != kUser);
+    final start = first < 0 ? 0 : first;
+    var end = start + 1;
+    while (end < current.length && current[end].role == kObservation) {
+      end++;
     }
-    return pairToolCalls(current.sublist(i));
+    return pairToolCalls([...current.sublist(0, start), ...current.sublist(end)]);
   }
 }
 

@@ -285,8 +285,24 @@ the parent's `onEvent` under its own `runId`. It cannot ask the user, but it
 can stop for approval — the request surfaces on the root session as an
 ordinary `WAITING_FOR_APPROVAL`, and `resolveApproval` + `resume` drives the
 child on, across a restart too. The parent's remaining token/cost budget is
-split between children and their usage charged back; `interrupt()` reaches
-them.
+split between children and their usage charged back; `interrupt()` parks
+them at their next step boundary — still `RUNNING` and resumable, not
+killed.
+
+With `background: true` the call returns `[{run_id, state: 'RUNNING'}]` at
+once and the parent's own loop continues: its next model call runs **while**
+the sub-agent works. A finished child is announced as a `[runtime]` notice
+at the **loop head**, never mid-batch (a system message between an
+assistant's tool calls and their results is a sequence no provider accepts);
+`meta.agent.join(run_ids?, cancel?)` collects, waits or stops. Two classic
+background-agent failures are structurally impossible rather than documented
+against: `finish` is refused while any sub-agent is uncollected, and
+`cancel()` / a budget stop / a fatal model error cancel the whole subtree —
+so no terminal run leaves an agent running and no result is dropped; and a
+background child is a `Run` with snapshots, so a dead process leaves one
+`resumeFromLedger` can still finish, with the parent rebuilding its
+outstanding children on restart. Call `await session.park()` before exiting
+to stop children at a boundary.
 
 `installBuiltins` is idempotent and a name the registry already resolves is
 left alone, so your own definition wins; an unknown pack name throws. Any

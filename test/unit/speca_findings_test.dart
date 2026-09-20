@@ -79,4 +79,61 @@ void main() {
     expect(await run((_) => 'same'), equals(config.limits.maxRepeats));
     expect(await run((i) => 'v$i'), equals(8));
   });
+
+  test('an undeclared effect still counts as irreversible', () {
+    final registry = Registry();
+    // No effects at all. Policy and the runtime already treat that as
+    // external; the rewind/branch notice used to read the raw list and
+    // report it as safe.
+    registry.register({
+      'name': 'demo.send.thing',
+      'category': 'demo',
+      'spec': {'description': 'Send a thing.'},
+    }, handler: (Map<String, Object?> _) => 'sent');
+    final capability = registry.get('demo.send.thing')!;
+    expect(capability.effects, isEmpty);
+    expect(capability.plannedEffects.any((e) => e.kind == 'external'), isTrue);
+  });
+
+  test('an oversized items array is rejected on length', () {
+    final registry = Registry();
+    installBuiltins(registry, ['checklist']);
+    final parameters = registry.get('planning.checklist.manage')!.spec.parameters;
+    final watch = Stopwatch()..start();
+    final error = validateArgs(parameters, {
+      'action': 'create',
+      'name': 'x',
+      'items': [for (var i = 0; i < 200000; i++) {'text': 'i$i'}],
+    });
+    watch.stop();
+    // Without maxItems the validator walked every entry before the
+    // handler's own 200 cap could reject it, on the shared event loop.
+    expect(error, contains('maxItems'));
+    expect(watch.elapsedMilliseconds, lessThan(1000));
+    expect(
+        validateArgs(parameters, {
+          'action': 'create',
+          'name': 'x',
+          'items': [for (var i = 0; i < 200; i++) {'text': 'i$i'}],
+        }),
+        isNull);
+  });
+
+  test('shrinking history never drops a user message', () {
+    final section = HistorySection();
+    final current = [
+      Message(role: kUser, content: 'the original instruction'),
+      Message(role: kAssistant, content: 'working on it'),
+      Message(role: kObservation, content: 'tool said so', toolCallId: 'c1'),
+      Message(role: kUser, content: 'a later turn'),
+    ];
+    final ctx = TurnContext(config: Config(), registry: Registry());
+    final shrunk = section.shrink(ctx, current)!;
+    // The assistant turn and the observation answering it go first; both
+    // user turns survive, including the original instruction.
+    expect(shrunk.map((m) => m.role), equals([kUser, kUser]));
+    // Only user turns left: the window is a hard limit, so the oldest one
+    // does finally go rather than the render overflowing.
+    expect(section.shrink(ctx, shrunk)!.map((m) => m.role), equals([kUser]));
+  });
 }

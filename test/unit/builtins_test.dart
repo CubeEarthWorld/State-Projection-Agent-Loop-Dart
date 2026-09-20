@@ -198,14 +198,21 @@ void main() {
       }
     });
 
-    test('interrupt reaches a running child', () async {
+    test('interrupt parks a running child and the next call finishes it', () async {
+      // Interrupt is a pause, not a kill: the child stops at its step
+      // boundary, stays RUNNING and resumable, and is picked up again.
       late Session session;
+      var steps = 0;
       session = _parent((model) => ScriptedLLM([
-            CallbackStep((messages, tools) {
-              session.interrupt();
-              return ScriptedLLM.call('meta.tool.find', arguments: {'query': 'anything'});
-            }),
-            DecisionStep(ScriptedLLM.finish('never')),
+            for (var i = 0; i < 4; i++)
+              CallbackStep((messages, tools) {
+                steps += 1;
+                if (steps == 1) {
+                  session.interrupt();
+                  return ScriptedLLM.call('meta.tool.find', arguments: {'query': 'anything'});
+                }
+                return ScriptedLLM.finish('finished later');
+              }),
           ]));
       final entry = ((await session.invoke('meta.agent.spawn', {
         'tasks': [
@@ -213,8 +220,13 @@ void main() {
         ]
       }) as List)
           .single) as Map;
-      expect(entry['state'], 'CANCELLED');
+      expect(entry['state'], 'RUNNING');
       expect(entry['result'], isNull);
+      expect([for (final c in session.children) c.run.id], [entry['run_id']]);
+
+      final joined = await session.invoke('meta.agent.join', {}) as List;
+      expect((joined.single as Map)['result'], 'finished later');
+      expect(session.children, isEmpty);
     });
 
     test('budget is split between children and charged back', () async {
@@ -260,7 +272,228 @@ void main() {
       });
       expect(tools.single, isNot(contains('meta__user__ask')));
     });
+
+    test('a child cannot spawn or join by default', () async {
+      final tools = <List<Object?>>[];
+      final session = _parent((model) => ScriptedLLM([
+            CallbackStep((messages, apiTools) {
+              tools.add([for (final t in apiTools ?? const []) (t as Map)['name']]);
+              return ScriptedLLM.finish('done');
+            }),
+          ]));
+      await session.invoke('meta.agent.spawn', {
+        'tasks': [
+          {'task': 'work'}
+        ]
+      });
+      expect(tools.single, isNot(contains('meta__agent__spawn')));
+      expect(tools.single, isNot(contains('meta__agent__join')));
+    });
   });
+
+  group('BackgroundSpawn', () {
+    // `background: true`: the parent keeps working while the sub-agent runs,
+    // and cannot finish until every child has been collected.
+
+    test('the parent keeps working while a child runs', () async {
+      // The child will not answer until the parent has issued its NEXT model
+      // call. A blocking spawn can never get there, so this deadlocks unless
+      // the parent really is still running.
+      final session = _backgroundParent([
+        DecisionStep(ScriptedLLM.call('meta.agent.spawn', arguments: {
+          'tasks': [
+            {'task': 'work'}
+          ],
+          'background': true,
+        })),
+        CallbackStep((messages, tools) {
+          if (!_arrived.isCompleted) _arrived.complete();
+          return 'still working';
+        }),
+        DecisionStep(ScriptedLLM.call('demo.wait')),
+        DecisionStep(ScriptedLLM.finish('parent done')),
+      ]);
+      expect(await session.runJob('go'), 'parent done');
+      expect(session.run.state, 'COMPLETED');
+      expect(session.children, isEmpty);
+      expect(_notices(session), 1);
+    });
+
+    test('a finished child is announced at the loop head, never mid-batch', () async {
+      // A notice wedged between an assistant's tool calls and their results
+      // renders a message sequence no provider accepts.
+      final session = _backgroundParent([
+        DecisionStep(ScriptedLLM.call('meta.agent.spawn', arguments: {
+          'tasks': [
+            {'task': 'work'}
+          ],
+          'background': true,
+        })),
+        CallbackStep((messages, tools) {
+          if (!_arrived.isCompleted) _arrived.complete();
+          return 'still working';
+        }),
+        DecisionStep(ScriptedLLM.call('demo.wait')),
+        DecisionStep(ScriptedLLM.finish('ok')),
+      ]);
+      await session.runJob('go');
+      var unobserved = 0;
+      var seenNotice = false;
+      for (final event in session.ledger.iterRun(session.run.id)) {
+        if (event.type == 'model_response') {
+          unobserved = (event.data['calls'] as List).length;
+        } else if (event.type == 'observation') {
+          unobserved -= 1;
+        } else if (event.type == 'notice' && event.data['child_run_id'] != null) {
+          seenNotice = true;
+          expect(unobserved, 0, reason: 'a notice landed between tool calls and their results');
+        }
+      }
+      expect(seenNotice, isTrue);
+    });
+
+    test('finish is refused while a child runs and join collects it', () async {
+      final session = _backgroundParent([
+        DecisionStep(ScriptedLLM.call('meta.agent.spawn', arguments: {
+          'tasks': [
+            {'task': 'work'}
+          ],
+          'background': true,
+        })),
+        DecisionStep(ScriptedLLM.finish('too early')),
+        DecisionStep(ScriptedLLM.call('meta.agent.join')),
+        DecisionStep(ScriptedLLM.finish('collected')),
+      ], childSteps: 4);
+      expect(await session.runJob('go'), 'collected');
+      expect(session.run.state, 'COMPLETED');
+      final rejected = [
+        for (final e in session.ledger.iterRun(session.run.id))
+          if (e.type == 'decision_validated' && e.data['ok'] == false) e,
+      ];
+      expect(rejected, isNotEmpty);
+      expect('${rejected.first.data['reason']}', contains('still running'));
+    });
+
+    test('a terminal parent never leaves a running child', () async {
+      final session = _backgroundParent([
+        DecisionStep(ScriptedLLM.call('meta.agent.spawn', arguments: {
+          'tasks': [
+            {'task': 'work'}
+          ],
+          'background': true,
+        })),
+        const TextStep('parked here'),
+      ], childSteps: 20, mode: 'chat');
+      await session.send('go');
+      final child = session.children.single;
+      await session.park();
+      expect(child.run.state, 'RUNNING');
+
+      session.cancel('host gave up');
+      expect(child.run.state, 'CANCELLED');
+      expect(session.children, isEmpty);
+    });
+
+    test('a background child survives a restart', () async {
+      final dir = Directory.systemTemp.createTempSync('spal_bg');
+      try {
+        final config = Config.fromDict({
+          'persistence': {'ledger_directory': dir.path}
+        });
+        var session = _backgroundParent([const TextStep('unused')],
+            childSteps: 20, mode: 'chat', config: config);
+        await session.invoke('meta.agent.spawn', {
+          'tasks': [
+            {'task': 'work'}
+          ],
+          'background': true,
+        });
+        await session.park();
+        final runId = session.run.id;
+        final childId = session.children.single.run.id;
+
+        session = _backgroundParent(
+            [DecisionStep(ScriptedLLM.call('demo.wait')), const TextStep('all collected')],
+            mode: 'chat', config: config, resume: runId);
+        expect([for (final c in session.children) c.run.id], [childId]);
+
+        expect(await session.send('carry on'), 'all collected');
+        expect(session.children, isEmpty);
+        expect(_notices(session, childId), 1);
+      } finally {
+        dir.deleteSync(recursive: true);
+      }
+    });
+  });
+}
+
+/// Set by the parent's second model call: proof it kept going.
+late Completer<void> _arrived;
+
+int _notices(Session session, [String? childRunId]) => [
+      for (final e in session.ledger.iterRun(session.run.id))
+        if (e.type == 'notice' &&
+            e.data['child_run_id'] != null &&
+            (childRunId == null || e.data['child_run_id'] == childRunId))
+          e,
+    ].length;
+
+/// A parent that can spawn in the background, plus `demo.wait`, a tool that
+/// blocks until its sub-agents are done.
+Session _backgroundParent(List<Step> steps,
+    {int childSteps = 1, String mode = 'job', Config? config, String? resume}) {
+  _arrived = Completer<void>();
+  config = config ?? Config();
+  config.mode = mode;
+
+  final registry = Registry();
+  registry.register(
+    capabilityDict('demo.wait', category: 'demo', effects: [('external', 'wait')]),
+    wantsCtx: true,
+    handler: (ToolContext ctx, Map<String, Object?> args) async {
+      // Await every sub-agent this run is driving, so ordering assertions do
+      // not race the scheduler.
+      final parent = ctx.session as Session;
+      await Future.wait([
+        for (final child in [...parent.children])
+          if (child.driver != null) child.driver!.catchError((Object _) {}),
+      ]);
+      return 'children settled';
+    },
+  );
+
+  LLMAdapter childLlm(String? model) => childSteps == 1
+      ? _Waiting()
+      : ScriptedLLM([
+          for (var i = 0; i < childSteps - 1; i++)
+            DecisionStep(ScriptedLLM.call('meta.tool.find', arguments: {'query': 'x'})),
+          DecisionStep(ScriptedLLM.finish('child done')),
+        ]);
+
+  if (resume != null) {
+    return Session.resumeFromLedger(ScriptedLLM(steps), resume,
+        config: config,
+        registry: registry,
+        policy: allowAll(),
+        builtins: const ['meta', 'spawn'],
+        spawnLlmFactory: childLlm);
+  }
+  return Session(ScriptedLLM(steps),
+      config: config,
+      registry: registry,
+      policy: allowAll(),
+      builtins: const ['meta', 'spawn'],
+      spawnLlmFactory: childLlm);
+}
+
+/// A child that answers only once the parent has taken another step.
+class _Waiting implements LLMAdapter {
+  @override
+  Future<Decision> complete(List<Message> messages,
+      [List<Map<String, Object?>>? tools, void Function(String)? onDelta]) async {
+    await _arrived.future.timeout(const Duration(seconds: 2));
+    return ScriptedLLM.finish('child done');
+  }
 }
 
 /// A model adapter that will not answer until its sibling has also been
