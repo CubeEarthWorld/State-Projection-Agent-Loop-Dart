@@ -214,6 +214,20 @@ void main() {
   group('regressions', () {
     final noise = [for (var i = 0; i < 30; i++) 'line $i'].join('\n');
 
+    test('an unpaired surrogate hashes the same in both ports', () {
+      // Python hashes text.encode("utf-8", errors="replace"), which emits
+      // "?"; Dart's encoder would substitute U+FFFD and the two ports would
+      // disagree on the dedupe key for the same string.
+      expect(contentHash('\uD800'), equals(contentHash('?')));
+      expect(contentHash('a\uD800b'), equals(contentHash('a?b')));
+      expect(contentHash('\uDC00'), equals(contentHash('?')));
+      // A well-formed astral character is untouched by that substitution.
+      expect(contentHash('\u{1F38C}'), isNot(equals(contentHash('?'))));
+      // These are the values the Python port produces.
+      expect(contentHash('\uD800'), equals('af63b24c8601a52e'));
+      expect(contentHash('a\uD800b\u{1F38C}c'), equals('b759eebbb39004af'));
+    });
+
     test('an HTTP status is not an error', () {
       // "status: 2" of "status: 200" used to match the exit-code pattern, so
       // a tool reporting an HTTP status was never compressed again.

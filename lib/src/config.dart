@@ -362,11 +362,11 @@ class Config {
   /// `querySources` and `resultSchema`.
   Config clone() => Config.fromDict(deepCopy(toDict()));
 
+  /// Key order follows the Python port's dataclass field order, so the two
+  /// write the same bytes the day a config lands in a fixture or a ledger row.
   Map<String, Object?> toDict() => {
         'mode': mode,
         'result_schema': resultSchema,
-        'compaction': compaction.toDict(),
-        'model': model.toDict(),
         'projection': projection.toDict(),
         'discovery': discovery.toDict(),
         'compression': compression.toDict(),
@@ -374,5 +374,7 @@ class Config {
         'artifacts': artifacts.toDict(),
         'limits': limits.toDict(),
         'persistence': persistence.toDict(),
+        'compaction': compaction.toDict(),
+        'model': model.toDict(),
       };
 }

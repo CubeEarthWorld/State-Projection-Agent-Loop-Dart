@@ -35,8 +35,38 @@ const double _tailRatio = 0.25;
 ///
 /// FNV-1a-64, as 16 hex digits — the same value the Python package produces
 /// for the same input, so keys stay comparable across the two.
-String contentHash(String text) =>
-    fnv1a64Hex(utf8.encode(text));
+///
+/// Unpaired surrogates become `?`, because Python hashes
+/// `text.encode("utf-8", errors="replace")` and that is what replace emits
+/// when encoding. Dart's encoder would substitute U+FFFD instead and the
+/// two ports would disagree on the dedupe key for the same string.
+String contentHash(String text) => fnv1a64Hex(utf8.encode(_pairSurrogates(text)));
+
+String _pairSurrogates(String text) {
+  const high = 0xD800, lowEnd = 0xDFFF, lowStart = 0xDC00;
+  final units = text.codeUnits;
+  StringBuffer? out;
+  for (var i = 0; i < units.length; i++) {
+    final u = units[i];
+    if (u < high || u > lowEnd) {
+      out?.writeCharCode(u);
+      continue;
+    }
+    // A high surrogate is well-formed only when a low one follows it.
+    final paired = u < lowStart &&
+        i + 1 < units.length &&
+        units[i + 1] >= lowStart &&
+        units[i + 1] <= lowEnd;
+    if (paired) {
+      out?..writeCharCode(u)..writeCharCode(units[i + 1]);
+      i++;
+      continue;
+    }
+    out ??= StringBuffer(String.fromCharCodes(units.take(i)));
+    out.write('?');
+  }
+  return out?.toString() ?? text;
+}
 
 /// Python's `str.splitlines` break set: \n \v \f \r \x1c \x1d \x1e \x85
 ///     (plus \r\n as one break).

@@ -107,19 +107,25 @@ class WorkingState {
         'verbatim_sequence': verbatimSequence,
       };
 
+  // `cast` would hand back a write-through view of the caller's list, so a
+  // seeded map would go on being mutated by the session that parsed it. The
+  // Python port copies (`list(...)` / `dict(...)`); copy here too.
+  static List<String> _strings(Object? v) =>
+      List<String>.from((v as List?) ?? const []);
+
   factory WorkingState.fromDict(Map<String, Object?> d) => WorkingState(
         goal: (d['goal'] ?? '').toString(),
-        acceptanceCriteria: ((d['acceptance_criteria'] as List?) ?? []).cast<String>(),
-        constraints: ((d['constraints'] as List?) ?? []).cast<String>(),
-        confirmedFacts: ((d['confirmed_facts'] as List?) ?? []).cast<String>(),
+        acceptanceCriteria: _strings(d['acceptance_criteria']),
+        constraints: _strings(d['constraints']),
+        confirmedFacts: _strings(d['confirmed_facts']),
         decisions: [
           for (final x in (d['decisions'] as List? ?? []))
             RecordedDecision.fromDict((x as Map).cast<String, Object?>()),
         ],
-        openQuestions: ((d['open_questions'] as List?) ?? []).cast<String>(),
-        nextActions: ((d['next_actions'] as List?) ?? []).cast<String>(),
-        artifactRefs: ((d['artifact_refs'] as List?) ?? []).cast<String>(),
-        extra: (d['extra'] as Map?)?.cast<String, Object?>() ?? {},
+        openQuestions: _strings(d['open_questions']),
+        nextActions: _strings(d['next_actions']),
+        artifactRefs: _strings(d['artifact_refs']),
+        extra: Map<String, Object?>.from((d['extra'] as Map?) ?? const {}),
         checklists: d.containsKey('checklists') ? ChecklistStore.fromDict(d['checklists']) : ChecklistStore(),
         foldedSequence: (d['folded_sequence'] as num?)?.toInt() ?? 0,
         verbatimSequence: (d['verbatim_sequence'] as num?)?.toInt() ?? 0,
