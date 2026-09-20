@@ -191,7 +191,10 @@ class PersistenceConfig {
 }
 
 class CompactionConfig {
-  CompactionConfig({this.triggerRatio = 0.0});
+  /// Fold when the prompt exceeds this share of the room the render has
+  /// (window less reserved output), at the next step of the verbatim
+  /// point. 0 turns the fold off; see docs/compression.md for the cost.
+  CompactionConfig({this.triggerRatio = 0.75});
 
   // When the rendered prompt exceeds this fraction of the window, one extra
   // model call folds old history into the working state (see compaction.dart).
