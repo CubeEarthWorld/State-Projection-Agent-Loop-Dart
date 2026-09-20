@@ -27,55 +27,51 @@ import '../serialization.dart';
   return (node, parts.last);
 }
 
+String _appendUnique(List<String> items, String text, String label) {
+  if (!items.contains(text)) items.add(text);
+  return '$label: $text';
+}
+
 String _setGoal(ToolContext ctx, Map<String, Object?> args) {
-  final text = args['text'] as String;
+  final text = args.str('text');
   ctx.workingState.goal = text;
   return 'goal set: $text';
 }
 
-String _addFact(ToolContext ctx, Map<String, Object?> args) {
-  final text = args['text'] as String;
-  final ws = ctx.workingState;
-  if (!ws.confirmedFacts.contains(text)) ws.confirmedFacts.add(text);
-  return 'fact recorded: $text';
-}
+String _addFact(ToolContext ctx, Map<String, Object?> args) =>
+    _appendUnique(ctx.workingState.confirmedFacts, args.str('text'), 'fact recorded');
 
-String _addConstraint(ToolContext ctx, Map<String, Object?> args) {
-  final text = args['text'] as String;
-  final ws = ctx.workingState;
-  if (!ws.constraints.contains(text)) ws.constraints.add(text);
-  return 'constraint recorded: $text';
-}
+String _addConstraint(ToolContext ctx, Map<String, Object?> args) =>
+    _appendUnique(ctx.workingState.constraints, args.str('text'), 'constraint recorded');
 
 String _recordDecision(ToolContext ctx, Map<String, Object?> args) {
-  final text = args['text'] as String;
-  final reason = (args['reason'] as String?) ?? '';
+  final text = args.str('text');
+  final reason = args.strOrNull('reason') ?? '';
   ctx.workingState.decisions.add(RecordedDecision(text: text, reason: reason));
   return 'decision recorded: $text${reason.isNotEmpty ? ' (because: $reason)' : ''}';
 }
 
-String _addOpenQuestion(ToolContext ctx, Map<String, Object?> args) {
-  final text = args['text'] as String;
-  final ws = ctx.workingState;
-  if (!ws.openQuestions.contains(text)) ws.openQuestions.add(text);
-  return 'open question added: $text';
-}
+String _addOpenQuestion(ToolContext ctx, Map<String, Object?> args) =>
+    _appendUnique(ctx.workingState.openQuestions, args.str('text'), 'open question added');
 
 String _resolveOpenQuestion(ToolContext ctx, Map<String, Object?> args) {
-  final text = args['text'] as String;
+  final text = args.str('text');
   final ws = ctx.workingState;
   ws.openQuestions = ws.openQuestions.where((q) => q != text).toList();
   return 'open question resolved: $text';
 }
 
 String _setNextActions(ToolContext ctx, Map<String, Object?> args) {
-  final actions = ((args['actions'] as List?) ?? []).cast<String>();
+  final actions = args.strs('actions');
   ctx.workingState.nextActions = List<String>.from(actions);
-  return 'next_actions set: $actions';
+  // Python renders the list with repr(), i.e. quoted elements.
+  // ponytail: plain single quotes; port Python's quote-swapping/escaping
+  // repr if an action ever contains a quote or a backslash.
+  return "next_actions set: [${actions.map((a) => "'$a'").join(', ')}]";
 }
 
 String _extraSet(ToolContext ctx, Map<String, Object?> args) {
-  final path = args['path'] as String;
+  final path = args.str('path');
   final value = args['value'];
   final (node, leaf) = _walkExtra(ctx.workingState.extra, path, create: true);
   node[leaf] = value;
@@ -83,12 +79,15 @@ String _extraSet(ToolContext ctx, Map<String, Object?> args) {
 }
 
 Object? _extraGet(ToolContext ctx, Map<String, Object?> args) {
-  final path = args['path'] as String;
+  final path = args.str('path');
   try {
     final (node, leaf) = _walkExtra(ctx.workingState.extra, path);
     if (!node.containsKey(leaf)) return '(not set: $path)';
     return node[leaf];
-  } catch (_) {
+  } on StateError {
+    // Only the missing-key case (Python catches KeyError and nothing
+    // else); an empty path is an ArgumentError and must surface as a
+    // failed call, not as "(not set: )".
     return '(not set: $path)';
   }
 }

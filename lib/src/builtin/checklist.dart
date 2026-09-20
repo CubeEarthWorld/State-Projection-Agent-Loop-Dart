@@ -3,7 +3,6 @@
 library;
 
 import '../capability.dart';
-import '../checklists.dart';
 
 Object? _checklist(ToolContext ctx, Map<String, Object?> args) {
   final arguments = Map<String, Object?>.from(args);
@@ -12,7 +11,7 @@ Object? _checklist(ToolContext ctx, Map<String, Object?> args) {
   if (['list', 'get', 'export'].contains(action)) {
     return ws.checklists.execute(action, arguments);
   }
-  final updated = ChecklistStore.fromDict(ws.checklists.toDict());
+  final updated = ws.checklists.copy();
   final result = updated.execute(action, arguments);
   final ledger = ctx.ledger;
   final run = ctx.run;

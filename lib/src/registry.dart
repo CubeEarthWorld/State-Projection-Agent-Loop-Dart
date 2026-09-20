@@ -25,13 +25,17 @@ abstract interface class ToolProvider {
 
 /// One scope entry against one capability.
 ///
-/// An entry matches a capability name exactly, a category exactly, or a
-/// category prefix written as `"cat/*"`. Shared by [Registry.subset] (an
-/// allow-list for sub-agents) and [Registry.disable] (a deny-list).
+/// An entry matches a capability name exactly, a category exactly, the
+/// wildcard `"*"` (everything), or a category prefix written as `"cat/*"` —
+/// which covers the category itself as well as every sub-category under it,
+/// so `"meta/*"` is never an empty scope while `"meta"` is not. Shared by
+/// [Registry.subset] (an allow-list for sub-agents) and [Registry.disable]
+/// (a deny-list).
 bool scopeMatches(String entry, String name, String category) {
-  if (entry == name || entry == category) return true;
-  return entry.endsWith('/*') &&
-      category.startsWith(entry.substring(0, entry.length - 1));
+  if (entry == '*' || entry == name || entry == category) return true;
+  if (!entry.endsWith('/*')) return false;
+  final prefix = entry.substring(0, entry.length - 2);
+  return category == prefix || category.startsWith('$prefix/');
 }
 
 /// Every capability in the system, and the single gate the model sees it
@@ -55,6 +59,9 @@ class Registry {
   (int, List<Capability>) _pinnedCache = (-1, const []);
   final List<ToolProvider> _providers = [];
   final Map<int, Set<String>> _providerTools = {};
+  // Qualified names that came in through register(), not a provider:
+  // refreshProviders() must never delete one of these.
+  final Set<String> _handRegistered = {};
 
   // -- mutation -------------------------------------------------------------
 
@@ -70,10 +77,8 @@ class Registry {
           'Capability "${cap.qualifiedName}" is already registered (use replace=true)');
     }
     _capabilities[cap.qualifiedName] = cap;
-    final current = _latest[cap.name];
-    if (current == null || _capabilities[current]!.version < cap.version) {
-      _latest[cap.name] = cap.qualifiedName;
-    }
+    _handRegistered.add(cap.qualifiedName);
+    _trackLatest(cap);
     _epoch += 1;
     return cap;
   }
@@ -82,6 +87,7 @@ class Registry {
   void unregister(String name) {
     if (_capabilities.containsKey(name)) {
       _capabilities.remove(name);
+      _handRegistered.remove(name);
       _recomputeLatest();
       _epoch += 1;
       return;
@@ -92,6 +98,7 @@ class Registry {
     if (removed.isNotEmpty) {
       for (final q in removed) {
         _capabilities.remove(q);
+        _handRegistered.remove(q);
       }
       _recomputeLatest();
       _epoch += 1;
@@ -101,22 +108,25 @@ class Registry {
   void _recomputeLatest() {
     _latest.clear();
     for (final cap in _capabilities.values) {
-      final current = _latest[cap.name];
-      if (current == null || _capabilities[current]!.version < cap.version) {
-        _latest[cap.name] = cap.qualifiedName;
-      }
+      _trackLatest(cap);
+    }
+  }
+
+  void _trackLatest(Capability cap) {
+    final current = _latest[cap.name];
+    if (current == null || _capabilities[current]!.version < cap.version) {
+      _latest[cap.name] = cap.qualifiedName;
     }
   }
 
   static Capability _coerce(Object capability,
       {Function? handler, bool wantsCtx = false}) {
     if (capability is Capability) {
-      if (handler != null) {
-        throw ArgumentError(
-            'Capability "${capability.name}" already carries its own handler; '
-            'pass a handler only when registering a definition map');
-      }
-      return capability;
+      // Honour the handler instead of refusing it, and do so on a copy:
+      // an already-built Capability may be shared with another registry
+      // (`subset()` hands the parent's objects to the child), which must
+      // not be rewired from here. Matches the Python port.
+      return handler == null ? capability : capability.withHandler(handler, wantsCtx: wantsCtx);
     }
     if (capability is Map) {
       return Capability.fromDict(capability.cast<String, Object?>(),
@@ -133,17 +143,25 @@ class Registry {
   }
 
   /// Sync provider-supplied capabilities; adds/removes bump the epoch once.
+  ///
+  /// A name one provider stops offering only goes away when *nothing* still
+  /// provides it: the removal set is per-provider but the registry is
+  /// shared, so deleting on the per-provider set alone made the outcome
+  /// depend on the order the providers were attached in.
   void refreshProviders() {
     var changed = false;
-    for (final provider in _providers) {
-      final pid = identityHashCode(provider);
-      final fresh = <String, Capability>{
-        for (final c in provider.provide().map((c) => _coerce(c)))
-          c.qualifiedName: c,
-      };
+    final freshByPid = <int, Map<String, Capability>>{
+      for (final provider in _providers)
+        identityHashCode(provider): {
+          for (final c in provider.provide().map((c) => _coerce(c))) c.qualifiedName: c,
+        },
+    };
+    final stillOffered = {for (final fresh in freshByPid.values) ...fresh.keys};
+    for (final pid in freshByPid.keys) {
+      final fresh = freshByPid[pid]!;
       final previous = _providerTools[pid] ?? <String>{};
-      for (final qname in previous.difference(fresh.keys.toSet())) {
-        if (_capabilities.containsKey(qname)) {
+      for (final qname in previous.difference(stillOffered)) {
+        if (_capabilities.containsKey(qname) && !_handRegistered.contains(qname)) {
           _capabilities.remove(qname);
           changed = true;
         }
@@ -229,6 +247,14 @@ class Registry {
 
   bool contains(String name) => get(name) != null;
 
+  /// Is the slot taken, disabled or not?
+  ///
+  /// [contains] answers "can the model reach it", which is false for a
+  /// disabled capability. An installer needs this question instead, or a
+  /// disabled name looks unregistered and gets overwritten.
+  bool hasDefinition(String name) =>
+      _capabilities.containsKey(name) || _latest.containsKey(name);
+
   int get length => capabilities.length;
 
   /// Latest version of every reachable capability, in registration order.
@@ -257,10 +283,13 @@ class Registry {
         pinnedCounts[cat] = (pinnedCounts[cat] ?? 0) + 1;
       }
     }
+    return _sortedCounts(totals, pinnedCounts);
+  }
+
+  static Map<String, (int, int)> _sortedCounts(
+      Map<String, int> totals, Map<String, int> pinned) {
     final sortedKeys = totals.keys.toList()..sort();
-    return {
-      for (final cat in sortedKeys) cat: (totals[cat]!, pinnedCounts[cat] ?? 0),
-    };
+    return {for (final cat in sortedKeys) cat: (totals[cat]!, pinned[cat] ?? 0)};
   }
 
   // -- layer 1: table of contents -------------------------------------------
@@ -280,10 +309,7 @@ class Registry {
         topTotals[root] = (topTotals[root] ?? 0) + entry.value.$1;
         topPinned[root] = (topPinned[root] ?? 0) + entry.value.$2;
       }
-      final sortedKeys = topTotals.keys.toList()..sort();
-      catInfo = {
-        for (final cat in sortedKeys) cat: (topTotals[cat]!, topPinned[cat] ?? 0),
-      };
+      catInfo = _sortedCounts(topTotals, topPinned);
     }
 
     final parts = <String>[];

@@ -31,7 +31,6 @@ import 'registry.dart';
 import 'run.dart';
 import 'serialization.dart';
 import 'runtime.dart';
-import 'tokens.dart';
 import 'working_state.dart';
 
 
@@ -216,7 +215,7 @@ class Session {
 
   /// A job is started the way a chat turn is; `config.mode` is what makes it
   /// run until finish(result).
-  Future<Object?> runJob(String task) => send(task);
+  Future<Object?> runJob(Object task) => send(task);
 
   /// Stop after the current step. A model call still waiting for the
   /// provider is abandoned outright; a tool that is already running
@@ -234,7 +233,9 @@ class Session {
   /// demand (`session.notice(await session.invoke('skill.foo.load'))`), a
   /// file that was attached. It renders as a system message, costs no turn
   /// and calls no model — what the *user* said goes through [send].
-  void notice(String text) => _notice(text);
+  void notice(String text) {
+    ledger.append(run.id, 'notice', {'text': text});
+  }
 
   void addSection(Section section, {String before = 'candidates'}) {
     projection.insertBefore(before, section);
@@ -301,7 +302,7 @@ class Session {
       hooks: _branchArgs.hooks,
       onDelta: _branchArgs.onDelta,
       memory: memory,
-      config: Config.fromDict(deepCopy(config.toDict())),
+      config: config.clone(),
       registry: registry,
       embedder: search.embedder,
       spawnLlmFactory: spawnLlmFactory,
@@ -324,28 +325,22 @@ class Session {
 
   /// External effects this run already committed — a sent email, a pushed
   /// commit. Neither branching nor rewinding can undo them, so both report
-  /// them; [upToTurn] stops the scan at the cut point.
-  List<String> _irreversibleEffects({int? upToTurn}) {
-    final notices = <String>[];
-    var userCount = 0;
-    for (final event in ledger.iterRun(run.id)) {
-      if (event.type == 'user_input' && upToTurn != null) {
-        if (userCount >= upToTurn) break;
-        userCount++;
-      }
-      if (event.type != 'command_completed') continue;
-      final command = run.commands[event.data['command_id']];
-      if (command == null) continue;
-      final capabilityName = command.capabilityName.contains('@')
-          ? command.capabilityName.substring(0, command.capabilityName.lastIndexOf('@'))
-          : command.capabilityName;
-      final capability = registry.get(capabilityName);
-      if (capability != null && capability.effects.any((e) => e.kind == 'external')) {
-        notices.add(
-            '${capability.qualifiedName} (command ${command.id}) already ran and cannot be undone');
-      }
-    }
-    return notices;
+  /// them ([rewind] collects its own, up to the cut point).
+  List<String> _irreversibleEffects() => [
+        for (final event in ledger.iterRun(run.id))
+          if (_effectNotice(event) case final effect?) effect,
+      ];
+
+  /// The note for one already-committed external effect, or null when the
+  /// event is not one.
+  String? _effectNotice(Event event) {
+    if (event.type != 'command_completed') return null;
+    final command = run.commands[event.data['command_id']];
+    if (command == null) return null;
+    final at = command.capabilityName.lastIndexOf('@');
+    final capability = registry.get(at < 0 ? command.capabilityName : command.capabilityName.substring(0, at));
+    if (capability == null || !capability.effects.any((e) => e.kind == 'external')) return null;
+    return '${capability.qualifiedName} (command ${command.id}) already ran and cannot be undone';
   }
 
   // -- process-restart resume ------------------------------------------------
@@ -440,13 +435,17 @@ class Session {
       }
 
       var (ctx, messages) = _project();
-      if (await _fold(ctx, messages)) {
+      final folded = await _fold();
+      // The fold makes a model call of its own: an interrupt there stops the
+      // turn here, before this one can run tools the user asked us to skip.
+      if (_interrupted) continue;
+      if (folded) {
         // From scratch: shrinking the first rendering consumed its candidates
         // and schemas, and the fold may have moved the goal.
         (ctx, messages) = _project();
       }
       ledger.append(run.id, 'projection_compiled', {
-        'tokens': estimateTokens(messages),
+        'tokens': projection.lastMessageTokens,
         'messages': messages.length,
         'candidates': [for (final s in ctx.candidates) s.tool.name],
       });
@@ -492,7 +491,7 @@ class Session {
         final error = schema == null ? null : validateValue(schema, decision.result);
         if (error != null) {
           ledger.append(run.id, 'decision_validated', {'ok': false, 'reason': 'result_schema: $error'});
-          _notice('[runtime] finish(result) rejected: $error. Fix the result and call finish again.');
+          notice('[runtime] finish(result) rejected: $error. Fix the result and call finish again.');
           continue;
         }
         ledger.append(run.id, 'decision_validated', {'ok': true, 'finish': true});
@@ -558,23 +557,19 @@ class Session {
     throw StateError('unreachable');
   }
 
-  void _emit(String text) {
-    final observer = onDelta;
-    if (observer != null) observer('tool', text);
-  }
+  void _emit(String text) => onDelta?.call('tool', text);
 
   /// Move the history's verbatim point forward in steps: only when the
   /// verbatim tail has grown to four times `fullWindow` is it cut back to
   /// `fullWindow`. Between steps the rendering of every older message is
   /// unchanged, so the prompt prefix stays byte-identical and a provider's
   /// cache keeps hitting; a step is one deliberate rebuild.
-  bool _stepTiers() {
+  void _stepTiers() {
     final keep = config.compression.fullWindow;
     final history = renderable(ledger, run.id);
     final tail = history.where((h) => h.$1.sequence >= workingState.verbatimSequence).length;
-    if (keep <= 0 || tail <= 4 * keep) return false;
+    if (keep <= 0 || tail <= 4 * keep) return;
     workingState.verbatimSequence = history[history.length - keep].$1.sequence;
-    return true;
   }
 
   (TurnContext, List<Message>) _project() {
@@ -593,7 +588,7 @@ class Session {
   /// window, fold history older than the full-fidelity window into the working
   /// state with one model call. Returns true when the projection must be
   /// re-rendered.
-  Future<bool> _fold(TurnContext ctx, List<Message> messages) async {
+  Future<bool> _fold() async {
     final ratio = config.compaction.triggerRatio;
     if (ratio <= 0) return false;
     // The ratio applies to the room the render actually has for messages
@@ -602,7 +597,7 @@ class Session {
     // measured with the reserve counted it fires every turn of a small window.
     final cfg = config.projection;
     final room = cfg.windowTokens - cfg.reservedOutputTokens - cfg.providerOverheadTokens;
-    final used = estimateTokens(messages) + projection.schemaTokens(ctx.apiTools);
+    final used = projection.lastMessageTokens + projection.lastSchemaTokens;
     if (used <= ratio * room) return false;
     // Fold from the ledger, never from the projection: what masking cleared
     // from the prompt is exactly what a fold must still read. The region is
@@ -631,7 +626,7 @@ class Session {
         ? 'reply was not a JSON object'
         : applyFoldDelta(workingState, delta, transcript: transcript);
     if (error != null) {
-      _notice('[runtime] compaction skipped: $error');
+      notice('[runtime] compaction skipped: $error');
       return false;
     }
     workingState.foldedSequence = foldable.last.$1.sequence;
@@ -667,11 +662,11 @@ class Session {
     if (!_budgetGraceUsed) {
       _budgetGraceUsed = true;
       final hint = config.mode == 'job' ? ' or call finish(result)' : '';
-      _notice('[runtime] Budget exceeded: $reason. Wrap up now with a final answer$hint.');
+      notice('[runtime] Budget exceeded: $reason. Wrap up now with a final answer$hint.');
       return (false, null);
     }
     if (config.mode == 'job') {
-      if (!['COMPLETED', 'FAILED', 'CANCELLED'].contains(run.state)) {
+      if (!terminalStates.contains(run.state)) {
         run.fail('budget_stop: $reason');
       }
       return (true, run.result ?? _lastText(kAssistant));
@@ -694,24 +689,18 @@ class Session {
       );
 
   List<ScoredTool> _layer2Candidates() {
-    final query = _candidateQueries().where((q) => q.isNotEmpty).join('\n');
+    final sources = <String, String Function()>{
+      'last_user_message': () => _lastText(kUser),
+      'last_model_thought': () => _lastText(kAssistant),
+      'goal_if_exists': () => workingState.goal,
+    };
+    final query = [
+      for (final source in config.discovery.querySources)
+        if (sources[source]?.call() case final text? when text.isNotEmpty) text,
+    ].join('\n');
     if (query.isEmpty) return [];
     final pinnedNames = registry.pinned().map((c) => c.name).toSet();
     return search.search(query, k: config.discovery.k, layer: 2, exclude: pinnedNames);
-  }
-
-  List<String> _candidateQueries() {
-    final parts = <String>[];
-    for (final source in config.discovery.querySources) {
-      if (source == 'last_user_message') {
-        parts.add(_lastText(kUser));
-      } else if (source == 'last_model_thought') {
-        parts.add(_lastText(kAssistant));
-      } else if (source == 'goal_if_exists') {
-        parts.add(workingState.goal);
-      }
-    }
-    return parts;
   }
 
   String _lastText(String role) {
@@ -725,22 +714,17 @@ class Session {
   }
 
   List<Map<String, Object?>> _apiTools(TurnContext ctx) {
-    final names = <String>{};
-    for (final capability in registry.pinned()) {
-      names.add(capability.name);
-    }
-    for (final scored in ctx.candidates) {
-      names.add(scored.tool.name);
-    }
-    names.addAll(_active);
-    final schemas = [
+    // Ordered and deduplicated: pinned, then candidates, then the LRU.
+    final names = <String>{
+      for (final capability in registry.pinned()) capability.name,
+      for (final scored in ctx.candidates) scored.tool.name,
+      ..._active,
+    };
+    return [
       for (final n in names)
-        if (registry.contains(n)) registry.get(n)!.toolSpec(),
+        if (registry.get(n) case final capability?) capability.toolSpec(),
+      if (config.mode == 'job') finishSpec,
     ];
-    if (config.mode == 'job') {
-      schemas.add(finishSpec);
-    }
-    return schemas;
   }
 
   void _activate(String name) {
@@ -752,11 +736,7 @@ class Session {
   }
 
   /// Mark tools recently used so their schemas are sent natively next turn.
-  void activate(Iterable<String> names) {
-    for (final name in names) {
-      _activate(name);
-    }
-  }
+  void activate(Iterable<String> names) => names.forEach(_activate);
 
   Object? _handleTextOnly(Decision decision) {
     if (config.mode == 'chat') return decision.text;
@@ -766,17 +746,13 @@ class Session {
           {'from': run.state, 'to': run.state, 'reason': 'gave_up_text_only'});
       return decision.text;
     }
-    _notice('[runtime] No tool was called. Continue working with tools, '
+    notice('[runtime] No tool was called. Continue working with tools, '
         'or call finish(result) to finish the job.');
     return _continue;
   }
 
   void _observe(String callId, String name, String text, {bool ok = true}) {
     ledger.append(run.id, 'observation', {'call_id': callId, 'name': name, 'text': text, 'ok': ok});
-  }
-
-  void _notice(String text) {
-    ledger.append(run.id, 'notice', {'text': text});
   }
 
   void _checkpoint() {
@@ -790,10 +766,15 @@ class Session {
   ///
   /// Returns a list of irreversible external effects that already executed
   /// and cannot be undone.
+  ///
+  /// [toTurn] must name an existing turn: past the last one there is no
+  /// checkpoint to restore from, and rewinding anyway would keep the whole
+  /// history while resetting the working state to an empty one.
   List<String> rewind({required int toTurn}) {
-    final irreversible = _irreversibleEffects(upToTurn: toTurn);
-    // One pass: keep renderable events before the toTurn-th user input, and
-    // restore the working state from the checkpoint written right after it.
+    // One pass: the effects committed before the toTurn-th user input, the
+    // renderable events to keep, and the working state from the checkpoint
+    // written right after it.
+    final irreversible = <String>[];
     final keptRenderable = <Event>[];
     var restoredWs = WorkingState();
     var userCount = 0;
@@ -801,17 +782,25 @@ class Session {
     for (final event in ledger.iterRun(run.id)) {
       if (!cut && event.type == 'user_input' && userCount++ == toTurn) cut = true;
       if (!cut) {
-        if (renderableTypes.contains(event.type)) keptRenderable.add(event);
+        if (renderableTypes.contains(event.type)) {
+          keptRenderable.add(event);
+        } else if (_effectNotice(event) case final effect?) {
+          irreversible.add(effect);
+        }
       } else if (event.type == 'checkpoint') {
         restoredWs = WorkingState.fromDict(
             (event.data['working_state'] as Map?)?.cast<String, Object?>() ?? {});
         break;
       }
     }
+    if (!cut) {
+      throw ArgumentError(
+          'rewind(toTurn: $toTurn) is out of range: this run has $userCount user turn(s)');
+    }
 
     final oldRunId = run.id;
     ledger.append(oldRunId, 'rewound', {'to_turn': toTurn, 'kept_messages': keptRenderable.length});
-    if (!['COMPLETED', 'FAILED', 'CANCELLED'].contains(run.state)) {
+    if (!terminalStates.contains(run.state)) {
       run.cancel('rewound to turn $toTurn');
     }
 

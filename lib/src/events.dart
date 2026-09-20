@@ -47,8 +47,6 @@ const List<String> eventTypes = [
   'hook_intervened',
 ];
 
-const List<String> renderableTypes = ['user_input', 'model_response', 'observation', 'notice'];
-
 class Event {
   Event({
     required this.id,
@@ -231,7 +229,15 @@ class JsonlLedger implements EventLedger {
     for (final rawLine in _fs.readLines(_path(runId))) {
       final line = rawLine.trim();
       if (line.isEmpty) continue;
-      final event = Event.fromLine(line);
+      final Event event;
+      try {
+        event = Event.fromLine(line);
+      } catch (_) {
+        // Appends are unbuffered, so a crash mid-append leaves a torn last
+        // line. One bad line must not make the run unresumable; every good
+        // line before it still replays.
+        continue;
+      }
       if (event.sequence > after) yield event;
     }
   }
@@ -279,36 +285,42 @@ class JsonlLedger implements EventLedger {
   }
 }
 
-/// The message a renderable event projects to; null for any other type.
-Message? eventToMessage(Event event) {
-  final data = event.data;
-  switch (event.type) {
-    case 'user_input':
-      return Message(role: kUser, content: data['text'] ?? '');
-    case 'model_response':
-      return Message(role: kAssistant, content: data['text'] ?? '', toolCalls: [
-        for (final c in (data['calls'] as List? ?? []))
+final Map<String, Message Function(Map<String, Object?>)> _messageBuilders = {
+  'user_input': (d) => Message(role: kUser, content: d['text'] ?? ''),
+  'model_response': (d) => Message(role: kAssistant, content: d['text'] ?? '', toolCalls: [
+        for (final c in (d['calls'] as List? ?? []))
           ToolCall.fromDict((c as Map).cast<String, Object?>()),
-      ]);
-    case 'observation':
-      return Message(
-          role: kObservation,
-          content: data['text'] ?? '',
-          toolCallId: data['call_id'] as String?,
-          name: data['name'] as String?);
-    case 'notice':
-      return Message(role: kSystem, content: data['text'] ?? '');
-    default:
-      return null;
-  }
-}
+      ]),
+  'observation': (d) => Message(
+      role: kObservation,
+      content: d['text'] ?? '',
+      toolCallId: d['call_id'] as String?,
+      name: d['name'] as String?),
+  'notice': (d) => Message(role: kSystem, content: d['text'] ?? ''),
+};
+
+/// Derived, so a new renderable type is one entry above and not a second list.
+final List<String> renderableTypes = _messageBuilders.keys.toList(growable: false);
+
+/// The message a renderable event projects to; null for any other type.
+Message? eventToMessage(Event event) => _messageBuilders[event.type]?.call(event.data);
+
+final Expando<(String, int, List<(Event, Message)>)> _rendered = Expando();
 
 /// The run's conversation, oldest first: each renderable event with the
-/// message it projects to. The one scan every reader of the history shares.
-List<(Event, Message)> renderable(EventLedger ledger, String runId) => [
-      for (final e in ledger.iterRun(runId))
-        if (eventToMessage(e) case final m?) (e, m),
-    ];
+/// message it projects to. The one scan every reader of the history shares —
+/// memoised until the next append. The messages are shared with every other
+/// reader: render from them, never mutate them.
+List<(Event, Message)> renderable(EventLedger ledger, String runId) {
+  final seq = ledger.lastSequence(runId);
+  if (_rendered[ledger] case final hit? when hit.$1 == runId && hit.$2 == seq) return hit.$3;
+  final built = [
+    for (final e in ledger.iterRun(runId))
+      if (eventToMessage(e) case final m?) (e, m),
+  ];
+  _rendered[ledger] = (runId, seq, built);
+  return built;
+}
 
 /// A ledger that also hands every appended [Event] to an observer.
 ///

@@ -95,6 +95,7 @@ class ToolSearch {
   Map<String, int> _df = {};
   double _avgdl = 1.0;
   Map<String, Vector> _vectors = {};
+  Map<String, String> _sources = {}; // the text each vector was made from
 
   // -- index --------------------------------------------------------------
 
@@ -126,18 +127,22 @@ class ToolSearch {
     _avgdl = lengths.isEmpty
         ? 1.0
         : lengths.reduce((a, b) => a + b) / lengths.length;
+    // Embed only what changed: every registry mutation bumps the epoch (a
+    // lone disable() included), and re-embedding all N tools for one is a
+    // whole round-trip to the backend. Indexed, not zipped: a backend
+    // returning fewer vectors than asked for must fail loudly, not silently
+    // drop the tail from semantic search.
     final emb = embedder;
-    if (emb != null) {
-      final toEmbed =
-          registry.capabilities.where((t) => !t.discovery.noEmbed).toList();
-      final texts = [for (final t in toEmbed) t.embeddingSource()];
-      final vecs = texts.isNotEmpty ? emb.embedDocuments(texts) : <Vector>[];
-      _vectors = {
-        for (var i = 0; i < toEmbed.length; i++) toEmbed[i].name: vecs[i],
-      };
-    } else {
-      _vectors = {};
-    }
+    final sources = <String, String>{
+      if (emb != null)
+        for (final t in registry.capabilities)
+          if (!t.discovery.noEmbed) t.name: t.embeddingSource(),
+    };
+    final stale = [for (final e in sources.entries) if (_sources[e.key] != e.value) e.key];
+    final vecs = stale.isEmpty ? <Vector>[] : emb!.embedDocuments([for (final n in stale) sources[n]!]);
+    final fresh = {for (var i = 0; i < stale.length; i++) stale[i]: vecs[i]};
+    _vectors = {for (final n in sources.keys) n: fresh[n] ?? _vectors[n]!};
+    _sources = sources;
     _epoch = registry.epoch;
   }
 
@@ -167,7 +172,7 @@ class ToolSearch {
   double _tagScore(String query, List<String> queryTokens, Capability tool) {
     final q = query.toLowerCase();
     var score = 0.0;
-    if (q.contains(tool.name.toLowerCase()) || q.trim() == tool.name.toLowerCase()) {
+    if (q.contains(tool.name.toLowerCase())) {
       score += 1.0;
     }
     final qset = queryTokens.toSet();

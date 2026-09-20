@@ -120,6 +120,18 @@ void main() {
       expect(last, isNot(contains('a somewhat long description')));
     });
 
+    test('render does not mutate the tool list it was handed', () {
+      // `render` drops native schemas to fit the window; it must do that to
+      // its own copy, not to the list the caller still holds.
+      final reg = Registry();
+      final cap = reg.register(
+          capabilityDict('demo.cand', summary: 'a somewhat long description of the tool'));
+      final projection = defaultProjection(reg, window: 1);
+      final apiTools = [cap.toolSpec()];
+      projection.render(makeTurn(registry: reg), apiTools: apiTools);
+      expect(apiTools, hasLength(1));
+    });
+
     test('working state rendered when present', () {
       final projection = defaultProjection(Registry());
       final ws = WorkingState(goal: 'ship the feature');

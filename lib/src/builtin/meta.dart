@@ -11,15 +11,13 @@ import 'dart:async';
 
 import '../artifacts.dart' show isRef, refKey;
 import '../capability.dart';
-import '../config.dart';
 import '../serialization.dart';
 import '../session.dart';
 
 Object? _findTools(ToolContext ctx, Map<String, Object?> args) {
-  final query = args['query'] as String;
-  final category = args['category'] as String?;
-  final k = (args['k'] as num?)?.toInt() ?? 8;
-  final results = ctx.search!.search(query, category: category, k: k, layer: 3);
+  final query = args.str('query');
+  final results =
+      ctx.search!.search(query, category: args.strOrNull('category'), k: args.intOr('k', 8), layer: 3);
   if (results.isEmpty) {
     final toc = ctx.registry.tocText();
     return 'No tools matched "$query". Categories: ${toc.isNotEmpty ? toc : '(none)'}';
@@ -41,17 +39,16 @@ Object? _findTools(ToolContext ctx, Map<String, Object?> args) {
 
 String _peek(ToolContext ctx, Map<String, Object?> args) {
   final artifact = args['artifact'];
-  final query = args['query'] as String?;
-  final range = args['range'] as String?;
   if (!isRef(artifact)) {
     return 'Error: ${dumps(artifact)} is not a valid artifact reference; expected {"\$artifact": "<id>"}';
   }
-  return ctx.store!.peek((artifact as Map)[refKey] as String, query: query, range: range);
+  return ctx.store!.peek((artifact as Map)[refKey] as String,
+      query: args.strOrNull('query'), range: args.strOrNull('range'));
 }
 
 Object? _searchHistory(ToolContext ctx, Map<String, Object?> args) {
-  final query = args['query'] as String;
-  final k = (args['k'] as num?)?.toInt() ?? 10;
+  final query = args.str('query');
+  final k = args.intOr('k', 10);
   final ledger = ctx.ledger;
   final run = ctx.run;
   if (ledger == null || run == null) {
@@ -71,12 +68,12 @@ Object? _searchHistory(ToolContext ctx, Map<String, Object?> args) {
 }
 
 Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
-  final task = args['task'] as String;
-  final kernel = args['kernel'] as String?;
-  final toolScope = (args['tool_scope'] as List?)?.cast<String>();
-  final model = args['model'] as String?;
-  final maxSteps = (args['max_steps'] as num?)?.toInt() ?? 15;
-  final checklistIds = (args['checklist_ids'] as List?)?.cast<String>();
+  final task = args.str('task');
+  final kernel = args.strOrNull('kernel');
+  final toolScope = args.strs('tool_scope');
+  final model = args.strOrNull('model');
+  final maxSteps = args.intOr('max_steps', 15);
+  final checklistIds = args.strsOrNull('checklist_ids');
 
   final parent = ctx.session;
   if (parent is! Session) {
@@ -94,14 +91,14 @@ Future<Object?> _spawn(ToolContext ctx, Map<String, Object?> args) async {
 
   // No scope means everything but spawn itself (no recursive swarm by
   // default). Always a subset(), so the parent's deny-list carries over.
-  final childRegistry = parent.registry.subset(toolScope != null && toolScope.isNotEmpty
+  final childRegistry = parent.registry.subset(toolScope.isNotEmpty
       ? toolScope
       : [
           for (final cap in parent.registry.capabilities)
             if (cap.name != 'meta.agent.spawn') cap.name,
         ]);
 
-  final childConfig = Config.fromDict(deepCopy(parent.config.toDict()));
+  final childConfig = parent.config.clone();
   childConfig.mode = 'job';
   childConfig.budget.maxSteps = maxSteps;
   childConfig.persistence.ledgerDirectory = null; // child ledger is not persisted independently

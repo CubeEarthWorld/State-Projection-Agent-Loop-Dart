@@ -298,71 +298,53 @@ class Capability {
     Function? handler,
     bool wantsCtx = false,
   }) {
-    final name = data['name'] as String?;
-    if (name == null || name.isEmpty) {
+    final name = data.strOr('name');
+    if (name.isEmpty) {
       throw ArgumentError("Capability definition requires a 'name'");
     }
-    final specD = (data['spec'] as Map?)?.cast<String, Object?>() ?? {};
-    final spec = CapabilitySpec(
-      description: (specD['description'] as String?) ?? '',
-      parameters: (specD['parameters'] as Map?)?.cast<String, Object?>() ??
-          {'type': 'object', 'properties': {}},
-      returns: (specD['returns'] as Map?)?.cast<String, Object?>(),
-      usageNotes: (specD['usage_notes'] as String?) ?? '',
-      examples: [
-        for (final e in (specD['examples'] as List? ?? []))
-          (e as Map).cast<String, Object?>(),
-      ],
-    );
-    final cardD = (data['card'] as Map?)?.cast<String, Object?>() ?? {};
+    final cardD = data.sub('card');
     if (cardD.containsKey('signature')) {
       throw ArgumentError(
-          'Capability "${data['name']}": card.signature is derived from the name and '
+          'Capability "$name": card.signature is derived from the name and '
           'parameters, not authored — remove it from the definition');
     }
-    final card = CapabilityCard(
-      summary: (cardD['summary'] as String?) ?? '',
-      tags: ((cardD['tags'] as List?) ?? []).cast<String>(),
-    );
-    final discD = (data['discovery'] as Map?)?.cast<String, Object?>() ?? {};
-    final discovery = CapabilityDiscovery(
-      pinned: (discD['pinned'] as bool?) ?? false,
-      requireSpec: (discD['require_spec'] as bool?) ?? false,
-      embeddingText: (discD['embedding_text'] as String?) ?? '',
-      noEmbed: (discD['no_embed'] as bool?) ?? false,
-      kernelNote: (discD['kernel_note'] as String?) ?? '',
-    );
-    final exeD = (data['execution'] as Map?)?.cast<String, Object?>() ?? {};
-    final opD =
-        (exeD['output_policy'] as Map?)?.cast<String, Object?>() ?? {};
-    final execution = CapabilityExecution(
-      handler: handler,
-      timeoutS: ((exeD['timeout_s'] as num?) ?? 30.0).toDouble(),
-      retries: (exeD['retries'] as num?)?.toInt() ?? 0,
-      retrySafety: (exeD['retry_safety'] as String?) ?? 'never_retry',
-      resolveHandles: (exeD['resolve_handles'] as bool?) ?? true,
-      outputPolicy: OutputPolicy(
-        maxInlineTokens: (opD['max_inline_tokens'] as num?)?.toInt(),
-        overflow: (opD['overflow'] as String?) ?? 'artifact',
-        preview: (opD['preview'] as String?) ?? 'head',
-      ),
-    );
-    final effects = [
-      for (final e in (data['effects'] as List? ?? []))
-        Effect(
-          kind: ((e as Map)['kind'] as String?) ?? 'none',
-          resource: (e['resource'] as String?) ?? '*',
-        ),
-    ];
+    final specD = data.sub('spec');
+    final discD = data.sub('discovery');
+    final exeD = data.sub('execution');
+    final opD = exeD.sub('output_policy');
     final cap = Capability(
       name: name,
-      version: (data['version'] as num?)?.toInt() ?? 1,
-      category: (data['category'] as String?) ?? '',
-      card: card,
-      spec: spec,
-      discovery: discovery,
-      execution: execution,
-      effects: effects,
+      version: data.intOr('version', 1),
+      category: data.strOr('category'),
+      card: CapabilityCard(summary: cardD.strOr('summary'), tags: cardD.strs('tags')),
+      spec: CapabilitySpec(
+        description: specD.strOr('description'),
+        // Shared with the definition, not copied: callers rely on it.
+        parameters: specD.mapOrNull('parameters'),
+        returns: specD.mapOrNull('returns'),
+        usageNotes: specD.strOr('usage_notes'),
+        examples: specD.maps('examples'),
+      ),
+      discovery: CapabilityDiscovery(
+        pinned: discD.boolOr('pinned', false),
+        requireSpec: discD.boolOr('require_spec', false),
+        embeddingText: discD.strOr('embedding_text'),
+        noEmbed: discD.boolOr('no_embed', false),
+        kernelNote: discD.strOr('kernel_note'),
+      ),
+      execution: CapabilityExecution(
+        handler: handler,
+        timeoutS: exeD.dblOr('timeout_s', 30.0),
+        retries: exeD.intOr('retries', 0),
+        retrySafety: exeD.strOr('retry_safety', 'never_retry'),
+        resolveHandles: exeD.boolOr('resolve_handles', true),
+        outputPolicy: OutputPolicy(
+          maxInlineTokens: opD.intOrNull('max_inline_tokens'),
+          overflow: opD.strOr('overflow', 'artifact'),
+          preview: opD.strOr('preview', 'head'),
+        ),
+      ),
+      effects: [for (final e in data.maps('effects')) Effect.fromDict(e)],
     );
     cap.wantsCtx = wantsCtx;
     return cap;
@@ -405,12 +387,6 @@ class Capability {
     return lines.join('\n');
   }
 
-  /// OpenAI-style function schema for native tool calling.
-  ///
-  /// Uses [apiName] (dots encoded as `__`), not the dotted [name] directly —
-  /// most native-function-calling providers, OpenAI included, reject "." in
-  /// a function name. Callers translate the name back with [fromApiName]
-  /// (see `Registry.resolveApiName`) before the call reaches the registry.
   /// Provider-neutral description of one callable tool.
   ///
   /// Deliberately just `name` / `description` / `parameters` (JSON Schema):
@@ -440,4 +416,53 @@ class Capability {
     final parts = [card.summary, ...card.tags];
     return parts.where((p) => p.isNotEmpty).join(' ');
   }
+
+  /// A copy of this capability wired to [handler].
+  ///
+  /// A copy, not a mutation: `subset()` hands the parent registry's
+  /// capability objects straight to the child, so rewiring in place would
+  /// let a sub-agent replace its parent's implementation mid-run.
+  Capability withHandler(Function handler, {bool wantsCtx = false}) => Capability(
+        name: name,
+        version: version,
+        category: category,
+        card: card,
+        spec: spec,
+        discovery: discovery,
+        execution: CapabilityExecution(
+          handler: handler,
+          timeoutS: execution.timeoutS,
+          retries: execution.retries,
+          retrySafety: execution.retrySafety,
+          resolveHandles: execution.resolveHandles,
+          outputPolicy: execution.outputPolicy,
+        ),
+        effects: effects,
+        wantsCtx: wantsCtx,
+      );
+}
+
+/// Typed reads of a raw JSON-ish map: a handler's arguments, or one level
+/// of a capability definition.
+///
+/// The Python port's runtime hands each handler typed kwargs and reads a
+/// definition with `dict.get(key, default)`; Dart has neither, and both
+/// [Capability.fromDict] and every builtin were hand-unpacking maps the
+/// same few ways. The `*OrNull` reads return null when the key is absent,
+/// so a caller can tell "not given" from "given, empty" (Python's `None`
+/// vs `[]`) and let a constructor's own default stand.
+extension ToolArgs on Map<String, Object?> {
+  String str(String key) => this[key] as String;
+  String? strOrNull(String key) => this[key] as String?;
+  String strOr(String key, [String fallback = '']) => (this[key] as String?) ?? fallback;
+  bool boolOr(String key, bool fallback) => (this[key] as bool?) ?? fallback;
+  int intOr(String key, int fallback) => (this[key] as num?)?.toInt() ?? fallback;
+  int? intOrNull(String key) => (this[key] as num?)?.toInt();
+  double dblOr(String key, double fallback) => (this[key] as num?)?.toDouble() ?? fallback;
+  Map<String, Object?>? mapOrNull(String key) => (this[key] as Map?)?.cast<String, Object?>();
+  Map<String, Object?> sub(String key) => mapOrNull(key) ?? const {};
+  List<String> strs(String key) => ((this[key] as List?) ?? const []).cast<String>();
+  List<String>? strsOrNull(String key) => (this[key] as List?)?.cast<String>();
+  List<Map<String, Object?>> maps(String key) =>
+      [for (final e in (this[key] as List?) ?? const []) (e as Map).cast<String, Object?>()];
 }

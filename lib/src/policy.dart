@@ -51,13 +51,32 @@ const List<String> presets = [
   'auto_workspace_dev',
 ];
 
+/// One character in fnmatch's sense: a Unicode code point, not a UTF-16
+/// code unit. Python strings are code points, so `fnmatch("🎌", "?")` is
+/// true there and `.` alone (one code unit) would make it false here.
+const String _oneChar = r'(?:[\uD800-\uDBFF][\uDC00-\uDFFF]|.)';
+
+/// Escape what a regex character class reads as syntax but fnmatch reads as
+/// a literal. The range hyphens are added back between chunks.
+String _escapeClassChunk(String s) => s
+    .replaceAll(r'\', r'\\')
+    .replaceAll('^', r'\^')
+    .replaceAll('[', r'\[')
+    .replaceAll(']', r'\]')
+    .replaceAll('-', r'\-');
+
 /// Translate a Python-`fnmatch`-style glob pattern (`*`, `?`, `[seq]`,
 /// `[!seq]`) into an anchored [RegExp].
 ///
 /// Deliberately `fnmatch`-compatible, not regex-compatible: `!` is the only
-/// negation character, `^` inside a class is a literal, and `*`/`?` match
-/// newlines. A policy pattern that means one thing here and another in the
-/// Python package would flip a `deny` into an `allow`.
+/// negation character, `^` inside a class is a literal, `*`/`?` match
+/// newlines, `?` matches one code point, and — as in CPython's
+/// `fnmatch.translate` — a range whose start sorts after its end is empty
+/// and simply drops out, so `[z-a]` matches nothing and `[!z-a]` matches
+/// any character instead of being a regex error. A policy pattern that
+/// means one thing here and another in the Python package would flip a
+/// `deny` into an `allow`; a pattern that *throws* would take authorization
+/// down with it.
 RegExp globToRegExp(String pattern) {
   final buf = StringBuffer('^');
   var i = 0;
@@ -66,7 +85,7 @@ RegExp globToRegExp(String pattern) {
     if (c == '*') {
       buf.write('.*');
     } else if (c == '?') {
-      buf.write('.');
+      buf.write(_oneChar);
     } else if (c == '[') {
       var j = i + 1;
       var negate = false;
@@ -76,26 +95,15 @@ RegExp globToRegExp(String pattern) {
       }
       // fnmatch: a ']' immediately after the (optional) '!' is a literal
       // member of the class, not the closing bracket.
-      var leadingBracket = '';
-      if (j < pattern.length && pattern[j] == ']') {
-        leadingBracket = ']';
-        j++;
-      }
-      final start = j;
+      final bodyStart = j;
+      if (j < pattern.length && pattern[j] == ']') j++;
       while (j < pattern.length && pattern[j] != ']') {
         j++;
       }
       if (j >= pattern.length) {
-        buf.write(RegExp.escape(c));
+        buf.write(RegExp.escape(c)); // unterminated '[' is a literal
       } else {
-        // Escape the characters that mean something to a regex class but
-        // nothing to fnmatch. A leading '^' is one of them.
-        final body = (leadingBracket + pattern.substring(start, j))
-            .replaceAll(r'\', r'\\')
-            .replaceAll('^', r'\^')
-            .replaceAll('[', r'\[')
-            .replaceAll(']', r'\]');
-        buf.write('[${negate ? '^' : ''}$body]');
+        buf.write(_classRegExp(pattern.substring(bodyStart, j), negate));
         i = j;
       }
     } else {
@@ -105,6 +113,43 @@ RegExp globToRegExp(String pattern) {
   }
   buf.write(r'$');
   return RegExp(buf.toString(), dotAll: true);
+}
+
+/// The regex for one `[...]` class body (the `!` already stripped into
+/// [negate]). Mirrors CPython's chunk-merging, which drops both endpoints
+/// of an empty range.
+String _classRegExp(String body, bool negate) {
+  var chunks = <String>[body];
+  if (body.contains('-')) {
+    chunks = [];
+    var start = 0;
+    // A '-' in first position is a literal, never a range separator.
+    var k = 1;
+    while (k <= body.length) {
+      k = body.indexOf('-', k);
+      if (k < 0) break;
+      chunks.add(body.substring(start, k));
+      start = k + 1; // the range's end character
+      k += 3; // earliest position of the next range's '-'
+    }
+    final tail = body.substring(start);
+    if (tail.isNotEmpty) {
+      chunks.add(tail);
+    } else {
+      chunks[chunks.length - 1] += '-'; // trailing '-' is a literal
+    }
+    for (var m = chunks.length - 1; m > 0; m--) {
+      final lo = chunks[m - 1][chunks[m - 1].length - 1];
+      if (lo.compareTo(chunks[m][0]) > 0) {
+        chunks[m - 1] =
+            chunks[m - 1].substring(0, chunks[m - 1].length - 1) + chunks[m].substring(1);
+        chunks.removeAt(m);
+      }
+    }
+  }
+  final stuff = chunks.map(_escapeClassChunk).join('-');
+  if (stuff.isEmpty) return negate ? _oneChar : '(?!)';
+  return '[${negate ? '^' : ''}$stuff]';
 }
 
 bool globMatch(String value, String pattern) => globToRegExp(pattern).hasMatch(value);
@@ -157,9 +202,8 @@ class PolicyDecision {
 typedef PolicyChangeListener = void Function(String description);
 
 class PolicyEngine {
-  PolicyEngine({String defaultDecision = 'require_approval', PolicyChangeListener? onChange})
-      : defaultDecision = defaultDecision,
-        _onChange = onChange {
+  PolicyEngine({this.defaultDecision = 'require_approval', PolicyChangeListener? onChange})
+      : _onChange = onChange {
     if (!decisions.contains(defaultDecision)) {
       throw ArgumentError('default_decision must be one of $decisions');
     }
@@ -277,21 +321,16 @@ class PolicyEngine {
   }
 
   PolicyDecision evaluate(Capability capability, Map<String, Object?> arguments) {
-    var worstDecision = 'allow';
-    var worstLayer = 'default';
-    var worstReason = 'no effects';
-    var worstSeverity = 0;
-    for (final effect in capability.plannedEffects) {
-      final (decision, layer, reason) = _evaluateEffect(capability, effect, arguments);
-      final severity = _severity[decision]!;
-      if (severity > worstSeverity) {
-        worstDecision = decision;
-        worstLayer = layer;
-        worstReason = reason;
-        worstSeverity = severity;
-      }
+    // plannedEffects always yields at least one effect (an undeclared
+    // capability gets a synthesized "external" one), so there is no empty
+    // case to seed. Ties keep the first-listed effect.
+    final effects = capability.plannedEffects;
+    var worst = _evaluateEffect(capability, effects.first, arguments);
+    for (final effect in effects.skip(1)) {
+      final result = _evaluateEffect(capability, effect, arguments);
+      if (_severity[result.$1]! > _severity[worst.$1]!) worst = result;
     }
-    return PolicyDecision(decision: worstDecision, reason: worstReason, layer: worstLayer);
+    return PolicyDecision(decision: worst.$1, reason: worst.$3, layer: worst.$2);
   }
 }
 
@@ -310,8 +349,11 @@ List<Rule> _presetRules(String preset) {
         effectKind: 'write', resourcePattern: 'working_state:checklists', reason: 'preset:local_checklists'),
     Rule(decision: 'allow', capabilityPattern: 'meta.user.ask',
         effectKind: 'external', resourcePattern: 'user:*', reason: 'preset:ask_user'),
+    // No effectKind: reads of the working state are covered too (a read is
+    // strictly less dangerous than the writes right beside it), exactly
+    // like the memory.* rule below.
     Rule(decision: 'allow', capabilityPattern: 'state.*',
-        effectKind: 'write', resourcePattern: 'working_state:*', reason: 'preset:local_working_state'),
+        resourcePattern: 'working_state:*', reason: 'preset:local_working_state'),
     Rule(decision: 'allow', capabilityPattern: 'memory.*', resourcePattern: 'memory:*',
         reason: 'preset:local_memory'),
   ];

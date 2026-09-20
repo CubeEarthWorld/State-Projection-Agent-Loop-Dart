@@ -1,21 +1,14 @@
 /// Versioned JSON-portable plans. Mutations validate a copy before committing.
 library;
 
-import 'dart:convert';
 import 'ids.dart';
 import 'serialization.dart';
 
 const checklistStatuses = [
-  'pending',
-  'in_progress',
-  'blocked',
-  'completed',
-  'cancelled'
+  'pending', 'in_progress', 'blocked', 'completed', 'cancelled',
 ];
 const checklistContextModes = ['name', 'summary', 'full'];
 final _idPattern = RegExp(r'^[0-7][0-9A-HJKMNP-TV-Z]{25}$');
-
-Object? _copy(Object? value) => jsonDecode(jsonEncode(value));
 
 Map<String, Object?> _keys(Object? value, Set<String> allowed) {
   if (value is! Map || value.keys.any((k) => !allowed.contains(k))) {
@@ -63,14 +56,8 @@ Map<String, Object?> _item(Object? raw, {bool generate = false}) {
 }
 
 Map<String, Object?> _checklist(Object? raw) {
-  final data = _keys(raw, {
-    'id',
-    'name',
-    'include_in_context',
-    'context_mode',
-    'revision',
-    'items'
-  });
+  final data = _keys(raw,
+      {'id', 'name', 'include_in_context', 'context_mode', 'revision', 'items'});
   if (data['include_in_context'] is! bool) {
     throw ArgumentError('include_in_context must be a boolean');
   }
@@ -102,7 +89,10 @@ Map<String, Object?> _checklist(Object? raw) {
 
 Map<String, Object?> _view(Map<String, Object?> data, [String mode = 'full']) {
   if (mode == 'name') return {'id': data['id'], 'name': data['name']};
-  final result = Map<String, Object?>.from(_copy(data) as Map)..remove('items');
+  final result = <String, Object?>{
+    for (final e in data.entries)
+      if (e.key != 'items') e.key: deepCopy<Object?>(e.value),
+  };
   final items = (data['items'] as List).cast<Map>();
   final counts = {
     for (final s in checklistStatuses)
@@ -132,7 +122,7 @@ Map<String, Object?> _view(Map<String, Object?> data, [String mode = 'full']) {
           : 0.0
     },
   });
-  if (mode == 'full') result['items'] = _copy(data['items']);
+  if (mode == 'full') result['items'] = deepCopy<Object?>(data['items']);
   return result;
 }
 
@@ -144,7 +134,17 @@ class ChecklistStore {
   bool get isEmpty => _lists.isEmpty;
 
   Map<String, Object?> toDict() =>
-      {'version': 1, 'checklists': _copy(_lists.values.toList())};
+      {'version': 1, 'checklists': deepCopy<Object?>(_lists.values.toList())};
+
+  /// A deep copy that skips revalidation: what is stored here is already
+  /// valid, so a mutation only has to validate the checklist it touches.
+  /// `ChecklistStore.fromDict(store.toDict())` revalidates all 100x200 of
+  /// them to achieve the same thing.
+  ChecklistStore copy() => ChecklistStore()
+    .._lists.addAll({
+      for (final e in _lists.entries)
+        e.key: deepCopy<Map<String, Object?>>(e.value),
+    });
 
   static ChecklistStore fromDict(Object? raw) {
     final data = _keys(raw, {'version', 'checklists'});
@@ -177,12 +177,8 @@ class ChecklistStore {
       'import': {'document'},
       'delete': {'id', 'expected_revision'},
       'update': {
-        'id',
-        'expected_revision',
-        'name',
-        'items',
-        'include_in_context',
-        'context_mode'
+        'id', 'expected_revision', 'name', 'items', 'include_in_context',
+        'context_mode',
       },
       'add_item': {'id', 'expected_revision', 'item'},
       'update_item': {'id', 'expected_revision', 'item_id', 'item'},
@@ -205,7 +201,7 @@ class ChecklistStore {
       if (!args.containsKey('id')) return toDict();
       return {
         'version': 1,
-        'checklists': [_copy(_get(args['id']))]
+        'checklists': [deepCopy<Object?>(_get(args['id']))]
       };
     }
     if (action == 'import') {
@@ -250,13 +246,10 @@ class ChecklistStore {
         _lists.remove(current['id']);
         return {'deleted': current['id']};
       }
-      value = Map<String, Object?>.from(_copy(current) as Map);
+      value = Map<String, Object?>.from(deepCopy<Object?>(current) as Map);
       if (action == 'update') {
-        for (final key in [
-          'name',
-          'include_in_context',
-          'context_mode',
-          'items'
+        for (final key in const [
+          'name', 'include_in_context', 'context_mode', 'items',
         ]) {
           if (args.containsKey(key)) value[key] = args[key];
         }

@@ -26,21 +26,15 @@ const List<List<int>> _cjkRanges = [
   [0xFF00, 0xFFEF], // fullwidth forms
 ];
 
-bool _isCjk(int codeUnit) {
-  for (final range in _cjkRanges) {
-    if (codeUnit >= range[0] && codeUnit <= range[1]) return true;
-  }
-  return false;
-}
+// 0x1100 is the lowest range start, so this rejects ASCII — the common case,
+// run per character of every message — in one comparison.
+bool _isCjk(int codeUnit) =>
+    codeUnit >= 0x1100 && _cjkRanges.any((r) => codeUnit >= r[0] && codeUnit <= r[1]);
 
 int estimateTextTokens(String text) {
   if (text.isEmpty) return 0;
-  var cjk = 0;
-  for (final rune in text.runes) {
-    if (_isCjk(rune)) cjk++;
-  }
-  final other = text.runes.length - cjk;
-  return cjk + (other / 4).ceil();
+  final cjk = text.runes.where(_isCjk).length;
+  return cjk + ((text.runes.length - cjk) / 4).ceil();
 }
 
 typedef TokenEstimator = int Function(String text);
@@ -62,9 +56,7 @@ const int imageTokens = 1000;
 int estimateTokens(Object? obj) {
   if (obj == null) return 0;
   if (obj is String) return _estimator(obj);
-  if (obj is List) {
-    return obj.fold<int>(0, (sum, x) => sum + estimateTokens(x));
-  }
+  if (obj is List) return obj.fold<int>(0, (sum, x) => sum + estimateTokens(x));
   if (obj is Message) {
     var total = 4 + estimateTokens(obj.content);
     for (final tc in obj.toolCalls) {

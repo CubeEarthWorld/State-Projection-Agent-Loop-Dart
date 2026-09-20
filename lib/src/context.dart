@@ -51,7 +51,9 @@ class ToolContext {
 
   String get runId => run?.id ?? '';
 
-  /// The handler-facing view of this context for one command.
+  /// The handler-facing view of this context for one command. Spelled out
+  /// rather than copied field-wise: `this` is usually a [TurnContext], and
+  /// the point is to hand the handler a plain [ToolContext] instead.
   ToolContext forCommand(String commandId) => ToolContext(
         config: config,
         registry: registry,

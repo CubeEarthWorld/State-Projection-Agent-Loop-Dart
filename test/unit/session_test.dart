@@ -704,6 +704,32 @@ void main() {
       expect(session.workingState.goal, equals('find the key'));
     });
 
+    test('past the last turn it is refused', () async {
+      // Out of range there is no checkpoint to restore from: rewinding
+      // silently kept the whole history while resetting the working state to
+      // an empty one, leaving the two permanently out of sync.
+      final registry = Registry();
+      installBuiltins(registry, ['state']);
+      final session = Session(
+        ScriptedLLM([
+          DecisionStep(ScriptedLLM.call('state.goal.set', arguments: {'text': 'find the key'})),
+          const TextStep('goal set'),
+          const TextStep('reply 1'),
+        ]),
+        registry: registry,
+        policy: allowAll(),
+      );
+      await session.send('set goal');
+      await session.send('msg 1');
+
+      for (final outOfRange in [2, 7, -1]) {
+        expect(() => session.rewind(toTurn: outOfRange),
+            throwsA(isA<ArgumentError>().having((e) => e.message, 'message', contains('out of range'))));
+      }
+      expect(session.workingState.goal, equals('find the key'));
+      expect(session.conversation.length, equals(6)); // nothing was rewritten either
+    });
+
     test('the conversation continues normally afterwards', () async {
       final session = Session(ScriptedLLM([
         const TextStep('reply 0'),

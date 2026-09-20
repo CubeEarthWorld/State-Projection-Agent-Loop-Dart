@@ -148,4 +148,23 @@ void main() {
       expect(results[0].tool.name, equals('text.translate'));
     });
   });
+
+  group('EmbeddingBackendMismatch', () {
+    test('too few vectors fails loudly', () {
+      // Python's zip() silently dropped the tail: the tools past the last
+      // vector vanished from semantic search with nothing said.
+      final search =
+          ToolSearch(makeRegistry(), embedder: _ShortEmbedder(), vector: 'on');
+      expect(() => search.search('検索', k: 3), throwsA(anything));
+    });
+  });
+}
+
+class _ShortEmbedder implements EmbeddingBackend {
+  @override
+  List<Vector> embedDocuments(List<String> texts) =>
+      [for (var i = 0; i < texts.length - 1; i++) List<double>.filled(4, 0.0)];
+
+  @override
+  Vector embedQuery(String text) => List<double>.filled(4, 0.0);
 }

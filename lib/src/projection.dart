@@ -2,12 +2,18 @@
 /// Ledger each turn. Truth lives in the ledger; the projection is a window
 /// over it with fidelity-graded compression.
 ///
-/// Fidelity levels (by event age from the tail of the renderable sequence):
+/// Fidelity levels, by distance from the working state's `verbatimSequence`
+/// (a point that moves in steps, so the rendering of old messages — and the
+/// provider's cached prefix — survives between steps):
 ///
-/// * `full`       — verbatim (most recent events)
-/// * `compressed` — noise-stripped, head+tail truncated
+/// * `full`       — verbatim (the tail, from the verbatim point on)
+/// * `compressed` — tool results masked to one line unless they report an
+///                  error; assistant text noise-stripped, head+tail truncated
 /// * `summary`    — first meaningful line + stats
-/// * (older events are simply excluded from the window)
+/// * (older events are excluded; a folded event keeps only the user's words)
+///
+/// The user's own messages are never compressed or dropped: what they asked
+/// for is the one thing every later step must still be able to read.
 ///
 /// Budget accounting: the window check counts rendered messages *plus*
 /// native tool schemas and a reserved output allowance. On overflow the
@@ -119,7 +125,6 @@ class KernelSection extends Section {
   }
 }
 
-/// Layer-1 table of contents. Rebuilds when the registry epoch changes.
 /// Standing instructions a workspace carries in `AGENTS.md` (or
 /// `CLAUDE.md`): every such file from the filesystem root down to `root`,
 /// outermost first, so the nearest file has the last word. Fixed for the
@@ -161,6 +166,7 @@ class InstructionsSection extends Section {
   List<Message> render(TurnContext ctx) => List.of(_messages);
 }
 
+/// Layer-1 table of contents. Rebuilds when the registry epoch changes.
 class TocSection extends Section {
   int _cachedEpoch = -1;
   List<Message> _cached = [];
@@ -225,13 +231,6 @@ class HistorySection extends Section {
   @override
   final String name = 'history';
 
-  /// Tiers by distance from the working state's `verbatimSequence`: the
-  /// tail (from that point on) and the user's own words are verbatim; before
-  /// the point, the nearest `compressedWindow` messages are compressed (tool
-  /// results masked unless they failed or report an error), the next
-  /// `summaryWindow` are one-line summaries, older ones are dropped, and a
-  /// folded message keeps only the user's words. The point moves in steps,
-  /// so between steps the rendering of every older message is unchanged.
   @override
   List<Message> render(TurnContext ctx) {
     final cfg = ctx.config.compression;
@@ -290,8 +289,7 @@ class WorkingStateSection extends Section {
     final ws = ctx.workingState;
     if (ws.isEmpty()) return const [];
     final body = ws.render(maxTokens: maxTokens);
-    if (body.isEmpty) return const [];
-    return [Message(role: kSystem, content: '[Working state]\n$body')];
+    return body.isEmpty ? const [] : [Message(role: kSystem, content: '[Working state]\n$body')];
   }
 }
 
@@ -330,18 +328,11 @@ class CandidatesSection extends Section {
   @override
   List<Message> render(TurnContext ctx) {
     if (ctx.candidates.isEmpty) return const [];
-    List<String> lines;
-    String header;
-    if (ctx.config.projection.dedupeCandidateCardsAgainstSchemas && ctx.apiTools.isNotEmpty) {
-      lines = [
-        for (final s in ctx.candidates)
-          s.tool.card.signature,
-      ];
-      header = '[Tool candidates — auto-selected for this turn; schemas sent natively]';
-    } else {
-      lines = [for (final s in ctx.candidates) s.tool.cardText()];
-      header = '[Tool candidates — auto-selected for this turn; call directly if useful]';
-    }
+    final native = ctx.config.projection.dedupeCandidateCardsAgainstSchemas && ctx.apiTools.isNotEmpty;
+    final header = native
+        ? '[Tool candidates — auto-selected for this turn; schemas sent natively]'
+        : '[Tool candidates — auto-selected for this turn; call directly if useful]';
+    final lines = [for (final s in ctx.candidates) native ? s.tool.card.signature : s.tool.cardText()];
     return [Message(role: kSystem, content: '$header\n${lines.join('\n')}')];
   }
 
@@ -351,12 +342,10 @@ class CandidatesSection extends Section {
     final dropped = ctx.candidates.removeLast().tool.apiName;
     // A dropped card takes its native schema with it, so the budget the
     // provider actually bills shrinks too.
-    ctx.apiTools = [for (final t in ctx.apiTools) if (_schemaName(t) != dropped) t];
+    ctx.apiTools = [for (final t in ctx.apiTools) if (t['name'] != dropped) t];
     return render(ctx);
   }
 }
-
-Object? _schemaName(Map<String, Object?> schema) => schema['name'];
 
 // ---------------------------------------------------------------------------
 // Pipeline
@@ -377,21 +366,19 @@ class Projection {
   final int windowTokens;
 
   Section? get(String name) {
-    for (final sec in sections) {
-      if (sec.name == name) return sec;
-    }
-    return null;
+    final i = sections.indexWhere((s) => s.name == name);
+    return i < 0 ? null : sections[i];
   }
 
   void insertBefore(String name, Section section) {
-    for (var i = 0; i < sections.length; i++) {
-      if (sections[i].name == name) {
-        sections.insert(i, section);
-        return;
-      }
-    }
-    sections.add(section);
+    final i = sections.indexWhere((s) => s.name == name);
+    sections.insert(i < 0 ? sections.length : i, section);
   }
+
+  /// What the last [render] settled on, so callers needing the same numbers
+  /// read them back instead of re-counting the whole prompt.
+  int lastMessageTokens = 0;
+  int lastSchemaTokens = 0;
 
   int schemaTokens(List<Map<String, Object?>> apiTools) {
     if (apiTools.isEmpty) return 0;
@@ -407,7 +394,7 @@ class Projection {
   static bool _dropSchema(TurnContext ctx) {
     final keep = {for (final c in ctx.registry.pinned()) c.apiName, finishName};
     for (var i = 0; i < ctx.apiTools.length; i++) {
-      if (!keep.contains(_schemaName(ctx.apiTools[i]))) {
+      if (!keep.contains(ctx.apiTools[i]['name'])) {
         ctx.apiTools.removeAt(i);
         return true;
       }
@@ -429,9 +416,12 @@ class Projection {
   }) {
     ctx.apiTools = List.of(apiTools ?? const <Map<String, Object?>>[]);
     final rendered = [for (final s in sections) s.render(ctx)];
-    int total() => schemaTokens(ctx.apiTools) +
-        reservedTokens +
-        rendered.fold<int>(0, (sum, m) => sum + estimateTokens(m));
+    int total() {
+      // Also what leaves last*Tokens behind for the caller.
+      lastMessageTokens = rendered.fold<int>(0, (sum, m) => sum + estimateTokens(m));
+      lastSchemaTokens = schemaTokens(ctx.apiTools);
+      return lastMessageTokens + lastSchemaTokens + reservedTokens;
+    }
 
     var progress = true;
     while (progress && total() > windowTokens) {
@@ -468,13 +458,10 @@ List<Section> buildDefaultSections(
     'history': () => HistorySection(),
     'candidates': () => CandidatesSection(),
   };
-  final sections = <Section>[];
   for (final name in names) {
-    if (factories.containsKey(name)) {
-      sections.add(factories[name]!());
-    } else {
+    if (!factories.containsKey(name)) {
       throw ProjectionError('Unknown section "$name"; pass Section instances via Session(sections: ...)');
     }
   }
-  return sections;
+  return [for (final name in names) factories[name]!()];
 }

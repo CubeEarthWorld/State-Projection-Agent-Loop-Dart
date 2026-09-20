@@ -29,14 +29,14 @@ class _IoFileSystem implements FileSystem {
   @override
   void writeString(String path, String text) {
     final file = File(path);
-    file.parent.createSync(recursive: true);
+    createDir(file.parent.path);
     file.writeAsStringSync(text, encoding: utf8);
   }
 
   @override
   void appendString(String path, String text) {
     final file = File(path);
-    file.parent.createSync(recursive: true);
+    createDir(file.parent.path);
     file.writeAsStringSync(text, mode: FileMode.append, encoding: utf8);
   }
 

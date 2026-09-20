@@ -43,6 +43,32 @@ class _Flaky implements LLMAdapter {
   }
 }
 
+/// Answers normally until the compaction fold, whose call never returns. A
+/// turn that carries on after the interrupt asks for one more decision — and
+/// that one calls a tool, which is exactly what must not happen.
+class _FoldHangs implements LLMAdapter {
+  _FoldHangs(this.foldStarted);
+  final Completer<void> foldStarted;
+  var replies = 0;
+  var callsAfterTheFold = 0;
+
+  @override
+  Future<Decision> complete(List<Message> messages,
+      [List<Map<String, Object?>>? tools, void Function(String)? onDelta]) async {
+    if (messages.first.content == foldInstructions) {
+      if (!foldStarted.isCompleted) foldStarted.complete();
+      await Future<void>.delayed(const Duration(seconds: 10));
+      return Decision(text: '{}');
+    }
+    if (foldStarted.isCompleted) {
+      callsAfterTheFold += 1;
+      return ScriptedLLM.call('demo.write', arguments: {'path': 'after-interrupt.txt'});
+    }
+    replies += 1;
+    return Decision(text: 'r$replies');
+  }
+}
+
 class _Broken implements LLMAdapter {
   @override
   Future<Decision> complete(List<Message> messages,
@@ -119,6 +145,28 @@ void main() {
       expect(await turn.timeout(const Duration(seconds: 2)), '[interrupted]');
       expect(events(session, 'run_state_changed').last['reason'], 'interrupted');
     });
+
+    test('interrupt during a compaction fold runs nothing else', () async {
+      final seen = <String>[];
+      final llm = _FoldHangs(Completer<void>());
+      final session = Session(
+        llm,
+        config: Config.fromDict({'compaction': {'trigger_ratio': 0.01}}),
+        registry: writeRegistry(seen),
+        policy: allowAll(),
+      );
+      for (var i = 1; i <= 12; i++) {
+        await session.send('m$i'); // the verbatim point steps on the 13th turn
+      }
+      final turn = session.send('m13');
+      await llm.foldStarted.future;
+      session.interrupt();
+
+      expect(await turn.timeout(const Duration(seconds: 2)), 'r12');
+      expect(llm.callsAfterTheFold, 0, reason: 'the interrupted turn must not call the model again');
+      expect(seen, isEmpty, reason: 'no tool may run after the user asked to stop');
+      expect(events(session, 'state_folded'), isEmpty);
+    });
   });
 
   group('hooks', () {
@@ -168,6 +216,44 @@ void main() {
       await session.send('go');
       expect([for (final e in events(session, 'observation')) e['text']], ['wrote [redacted]']);
       expect(events(session, 'hook_intervened').single['stage'], 'after');
+    });
+
+    test('a throwing hook rejects its own call without losing the batch', () async {
+      final seen = <String>[];
+      final session = Session(
+        ScriptedLLM([
+          DecisionStep(ScriptedLLM.calls([
+            ('demo.write', {'path': 'a.txt'}),
+            ('demo.write', {'path': 'b.txt'}),
+            ('demo.write', {'path': 'c.txt'}),
+          ])),
+          const TextStep('ok'),
+        ]),
+        registry: writeRegistry(seen),
+        policy: allowAll(),
+        hooks: Hooks(beforeCall: (cap, args, ctx) {
+          if (args['path'] == 'b.txt') throw StateError('hook exploded');
+          return null;
+        }),
+      );
+      expect(await session.send('go'), 'ok');
+      expect(seen, ['a.txt', 'c.txt']);
+      expect([for (final e in events(session, 'observation')) e['text']],
+          ['wrote a.txt', 'Rejected by hook: StateError: Bad state: hook exploded', 'wrote c.txt']);
+    });
+
+    test('a throwing afterCall hook keeps the real observation', () async {
+      final seen = <String>[];
+      final session = Session(
+        ScriptedLLM([DecisionStep(ScriptedLLM.call('demo.write', arguments: {'path': 'a.txt'})), const TextStep('ok')]),
+        registry: writeRegistry(seen),
+        policy: allowAll(),
+        hooks: Hooks(afterCall: (cap, args, result, ctx) => throw StateError('redactor exploded')),
+      );
+      expect(await session.send('go'), 'ok');
+      expect([for (final e in events(session, 'observation')) e['text']], ['wrote a.txt']);
+      expect(events(session, 'hook_intervened').single['error'],
+          'StateError: Bad state: redactor exploded');
     });
   });
 

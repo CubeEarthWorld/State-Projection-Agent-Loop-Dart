@@ -12,11 +12,14 @@ import 'hashing.dart';
 import 'dart:math';
 
 
+// `[^\n]` rather than `.`, which in Dart also excludes \r: without it none
+// of these match CRLF output, which is most tool output captured on Windows.
+// Python's `.` outside DOTALL excludes only \n, so `[^\n]` is the port of it.
 final List<(RegExp, String)> _noisePatterns = [
-  (RegExp(r'^diff --git .+\n', multiLine: true), ''),
-  (RegExp(r'^index [0-9a-f]+\.\.[0-9a-f]+.*\n', multiLine: true), ''),
-  (RegExp(r'^--- a/.+\n', multiLine: true), ''),
-  (RegExp(r'^\+\+\+ b/.+\n', multiLine: true), ''),
+  (RegExp(r'^diff --git [^\n]+\n', multiLine: true), ''),
+  (RegExp(r'^index [0-9a-f]+\.\.[0-9a-f]+[^\n]*\n', multiLine: true), ''),
+  (RegExp(r'^--- a/[^\n]+\n', multiLine: true), ''),
+  (RegExp(r'^\+\+\+ b/[^\n]+\n', multiLine: true), ''),
   (RegExp(r'^@@ [^@]+ @@[^\n]*\n', multiLine: true), ''),
   (RegExp(r'^(node_modules|\.venv|__pycache__|\.git/|\.dart_tool/)[^\n]*\n', multiLine: true), ''),
   (RegExp(r'^\s*$\n(\s*$\n)+', multiLine: true), '\n'),
@@ -30,29 +33,29 @@ const double _tailRatio = 0.25;
 
 /// Content-addressed key for detecting repeated observations.
 ///
-/// SHA-256, truncated to 16 hex digits — the same value the Python package
-/// produces for the same input, so keys stay comparable across the two.
+/// FNV-1a-64, as 16 hex digits — the same value the Python package produces
+/// for the same input, so keys stay comparable across the two.
 String contentHash(String text) =>
     fnv1a64Hex(utf8.encode(text));
 
+/// Python's `str.splitlines` break set: \n \v \f \r \x1c \x1d \x1e \x85
+///     (plus \r\n as one break).
+bool _isLineBreak(int c) =>
+    (c >= 0x0A && c <= 0x0D) || (c >= 0x1C && c <= 0x1E) || c == 0x85 || c == 0x2028 || c == 0x2029;
+
 /// Split into lines *keeping* the line terminators, so joining the pieces
 /// reproduces the input byte for byte. Matches Python's
-/// `str.splitlines(keepends=True)` in what it treats as a break: \r\n, \n
-/// and a lone \r.
+/// `str.splitlines(keepends=True)` in what it treats as a break.
 List<String> splitLinesKeepEnds(String text) {
   final lines = <String>[];
   var start = 0;
   for (var i = 0; i < text.length; i++) {
     final c = text.codeUnitAt(i);
-    if (c == 0x0A) {
-      lines.add(text.substring(start, i + 1));
-      start = i + 1;
-    } else if (c == 0x0D) {
-      final end = (i + 1 < text.length && text.codeUnitAt(i + 1) == 0x0A) ? i + 2 : i + 1;
-      lines.add(text.substring(start, end));
-      i = end - 1;
-      start = end;
-    }
+    if (!_isLineBreak(c)) continue;
+    final end = (c == 0x0D && i + 1 < text.length && text.codeUnitAt(i + 1) == 0x0A) ? i + 2 : i + 1;
+    lines.add(text.substring(start, end));
+    i = end - 1;
+    start = end;
   }
   if (start < text.length) lines.add(text.substring(start));
   return lines;
@@ -69,12 +72,18 @@ String headTailTruncate(String text, int maxLines) {
   final lines = splitLinesKeepEnds(text);
   if (lines.length <= maxLines) return text;
   final headN = max(1, (maxLines * _headRatio).truncate());
-  final tailN = max(1, (maxLines * _tailRatio).truncate());
+  // The marker is itself a line, so head + tail + marker must still fit
+  // `maxLines` — with the shipped defaults this clamp never binds.
+  final tailN = max(0, min(max(1, (maxLines * _tailRatio).truncate()), maxLines - headN - 1));
   final omitted = lines.length - headN - tailN;
   if (omitted <= 0) return text;
   final head = lines.sublist(0, headN);
   final tail = tailN > 0 ? lines.sublist(lines.length - tailN) : <String>[];
-  return '${head.join()}  [... $omitted lines omitted ...]\n${tail.join()}';
+  final result = '${head.join()}  [... $omitted lines omitted ...]\n${tail.join()}';
+  // Truncating many short lines costs more characters than it saves; the
+  // budget is in characters, so hand back the original when that happens.
+  // Characters, not UTF-16 code units, so the cutoff matches Python's.
+  return result.runes.length < text.runes.length ? result : text;
 }
 
 String compressText(String text, {int maxLines = 80}) {
@@ -82,24 +91,21 @@ String compressText(String text, {int maxLines = 80}) {
   var result = stripNoise(text);
   result = headTailTruncate(result, maxLines);
   if (result.trim().isEmpty && text.trim().isNotEmpty) {
-    result = text.split('\n').first;
+    result = splitLinesKeepEnds(text).first;
   }
   return result;
 }
 
+const List<String> _commentPrefixes = ['#', '//', '/*', '*', '---'];
+
 String firstMeaningfulLine(String text) {
-  for (final line in text.split('\n')) {
+  final lines = splitLinesKeepEnds(text);
+  for (final line in lines) {
     final stripped = line.trim();
-    if (stripped.isNotEmpty &&
-        !stripped.startsWith('#') &&
-        !stripped.startsWith('//') &&
-        !stripped.startsWith('/*') &&
-        !stripped.startsWith('*') &&
-        !stripped.startsWith('---')) {
+    if (stripped.isNotEmpty && !_commentPrefixes.any(stripped.startsWith)) {
       return stripped;
     }
   }
-  final lines = text.split('\n');
   return lines.isNotEmpty ? lines.first.trim() : '';
 }
 
@@ -126,8 +132,12 @@ String summarizeText(String text) {
 // call *failed* is treated as an error without consulting this at all.
 final RegExp _errorMarker = RegExp(
   r'\b(error|traceback|exception|failed|denied|fatal|panic|fehler|erreur|errore)\b'
-  r'|(?:exit(?: code)?|returncode|status)[=: ]+[1-9]'
-  r'|\bline \d+, in \b|\bat [^\n]+:\d+'
+  // A process that exited non-zero: the whole code, not its first digit, and
+  // never a bare "status" (an HTTP "status: 200" is not a failure).
+  r'|\b(?:exit(?: code| status)?|returncode)[=: ]+(?!0+\b)\d{1,3}\b'
+  // A stack frame's file:line. The token before the colon must contain a
+  // non-digit, so a clock time ("at 14:30") is not mistaken for a frame.
+  r'|\bline \d+, in \b|\bat [^\n]*[^\s:\d][^\s:]*:\d+'
   r'|エラー|失敗|例外|错误|失败|异常|오류|실패|ошибка|исключение',
   caseSensitive: false,
 );

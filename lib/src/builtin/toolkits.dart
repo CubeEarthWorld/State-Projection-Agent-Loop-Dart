@@ -27,7 +27,7 @@ void installToolkits(Registry registry, Directory root, {bool shell = true}) {
   }
 
   Object? list(Map<String, Object?> args) {
-    final dir = Directory(resolve((args['path'] as String?) ?? ''));
+    final dir = Directory(resolve(args.strOrNull('path') ?? ''));
     if (!dir.existsSync()) return <String>[];
     final paths = [
       for (final e in dir.listSync(recursive: true))
@@ -36,18 +36,18 @@ void installToolkits(Registry registry, Directory root, {bool shell = true}) {
     return paths;
   }
 
-  Object? read(Map<String, Object?> args) => File(resolve(args['path'] as String)).readAsStringSync();
+  Object? read(Map<String, Object?> args) => File(resolve(args.str('path'))).readAsStringSync();
 
   Object? write(Map<String, Object?> args) {
-    final file = File(resolve(args['path'] as String));
+    final file = File(resolve(args.str('path')));
     file.parent.createSync(recursive: true);
-    final content = args['content'] as String;
+    final content = args.str('content');
     file.writeAsStringSync(content);
-    return 'wrote ${content.length} chars to ${args['path']}';
+    return 'wrote ${content.length} chars to ${args.str('path')}';
   }
 
   Future<Object?> run(Map<String, Object?> args) async {
-    final command = args['command'] as String;
+    final command = args.str('command');
     final result = Platform.isWindows
         ? await Process.run('cmd', ['/c', command], workingDirectory: rootPath)
         : await Process.run('sh', ['-c', command], workingDirectory: rootPath);

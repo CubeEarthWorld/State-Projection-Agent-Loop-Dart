@@ -73,26 +73,14 @@ class Message {
   final String? name;
 
   String text() {
-    if (content is String) return content as String;
-    if (content is List) {
-      final parts = <String>[];
-      for (final p in content as List) {
-        if (p is Map && p['type'] == 'text') {
-          parts.add((p['text'] ?? '').toString());
-        }
-      }
-      return parts.join('\n');
-    }
-    return content?.toString() ?? '';
+    final body = content;
+    if (body is String) return body;
+    if (body is! List) return body?.toString() ?? '';
+    return [
+      for (final p in body)
+        if (p is Map && p['type'] == 'text') (p['text'] ?? '').toString(),
+    ].join('\n');
   }
-
-  Map<String, Object?> toDict() => {
-        'role': role,
-        'content': content,
-        'tool_calls': toolCalls.map((tc) => tc.toDict()).toList(),
-        'tool_call_id': toolCallId,
-        'name': name,
-      };
 
   factory Message.fromDict(Map<String, Object?> d) => Message(
         role: d['role'] as String,
@@ -130,8 +118,6 @@ class Usage {
   // when it does not say): the number that tells whether the projection's
   // prefix stayed byte-stable between turns.
   final int cachedTokens;
-
-  int get totalTokens => promptTokens + completionTokens;
 
   Map<String, int> toDict() =>
       {'prompt_tokens': promptTokens, 'completion_tokens': completionTokens, 'cached_tokens': cachedTokens};

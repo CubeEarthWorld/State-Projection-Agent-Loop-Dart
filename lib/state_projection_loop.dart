@@ -102,4 +102,4 @@ export 'src/session.dart' show Session, ConcurrencyError;
 export 'src/tokens.dart' show estimateTokens, estimateTextTokens, setEstimator, imageTokens;
 export 'src/working_state.dart' show WorkingState, RecordedDecision, workingStateFields;
 
-const String packageVersion = '0.5.0';
+const String packageVersion = '1.0.0';

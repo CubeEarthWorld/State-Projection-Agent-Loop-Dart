@@ -227,6 +227,112 @@ void main() {
       expect(sub.get('web.search.query'), isNull);
     });
   });
+
+  group('SharedCapabilityObjects', () {
+    // One Capability object must never be live in two registries:
+    // `subset()` hands the parent's objects to the child, so attaching a
+    // handler in place let a child rewire its parent's tools mid-run.
+    test('a child registry cannot rewire its parent', () {
+      final reg = Registry();
+      reg.register(capabilityDict('file.read', category: 'file'),
+          handler: okHandlerFactory('read'));
+      final parentHandler = reg.get('file.read')!.execution.handler;
+      final child = reg.subset(['file.read']);
+      child.register(child.get('file.read')!,
+          handler: okHandlerFactory('hijacked'), replace: true);
+      expect(reg.get('file.read')!.execution.handler, same(parentHandler));
+    });
+  });
+
+  group('RegisterHandlerOverride', () {
+    test('handler given with a built capability is honoured', () {
+      // It used to be refused outright; Python silently dropped it. Both
+      // now swap the implementation, on a copy.
+      final reg = Registry();
+      final built = reg.register(capabilityDict('demo.swap.me'), handler: okHandlerFactory('a'));
+      final other = okHandlerFactory('b');
+      final swapped = Registry().register(built, handler: other);
+      expect(swapped.execution.handler, same(other));
+      expect(built.execution.handler, isNot(same(other)));
+    });
+  });
+
+  group('ProviderRemoval', () {
+    Map<String, Object?> shared() => capabilityDict('shared.tool.x', category: 'shared');
+
+    test('a name another provider still offers survives', () {
+      // The removal set is per-provider but the registry is shared, so
+      // deleting on it alone made the result depend on attach order.
+      for (final reversed in [false, true]) {
+        final a = _ListProvider([shared()]);
+        final b = _ListProvider([shared()]);
+        final reg = Registry();
+        for (final p in reversed ? [b, a] : [a, b]) {
+          reg.attachProvider(p);
+        }
+        a.defs = [];
+        reg.refreshProviders();
+        expect(reg.get('shared.tool.x'), isNotNull, reason: 'reversed=$reversed');
+      }
+    });
+
+    test('a hand registered name is never deleted by a provider', () {
+      final reg = Registry();
+      final provider = _ListProvider([shared()]);
+      reg.attachProvider(provider);
+      reg.register(shared(), handler: okHandlerFactory('mine'), replace: true);
+      provider.defs = [];
+      reg.refreshProviders();
+      expect(reg.get('shared.tool.x'), isNotNull);
+    });
+
+    test('a name no provider offers any more still goes', () {
+      final reg = Registry();
+      final provider = _ListProvider([shared()]);
+      reg.attachProvider(provider);
+      provider.defs = [];
+      reg.refreshProviders();
+      expect(reg.get('shared.tool.x'), isNull);
+    });
+  });
+
+  group('WildcardScope', () {
+    Registry buildWildcardRegistry() {
+      final reg = Registry();
+      reg.register(capabilityDict('meta.tool.find', category: 'meta'));
+      reg.register(capabilityDict('meta.agent.spawn', category: 'meta'));
+      reg.register(capabilityDict('web.search.query', category: 'web/search'));
+      reg.register(capabilityDict('file.read', category: 'file'));
+      return reg;
+    }
+
+    test('star matches everything', () {
+      // `spawn`'s own tool_scope description advertises wildcards, so a
+      // model passing one used to get a child agent with zero tools.
+      final reg = buildWildcardRegistry();
+      expect(reg.subset(['*']).length, equals(reg.length));
+    });
+
+    test('bare category wildcard matches that category', () {
+      final reg = buildWildcardRegistry();
+      expect(reg.subset(['meta/*']).all().map((c) => c.name).toList()..sort(),
+          equals(['meta.agent.spawn', 'meta.tool.find']));
+    });
+
+    test('category wildcard still matches sub categories', () {
+      final reg = buildWildcardRegistry();
+      expect(reg.subset(['web/*']).all().map((c) => c.name).toList(), equals(['web.search.query']));
+    });
+
+    test('the deny list understands the same wildcards', () {
+      final reg = buildWildcardRegistry();
+      reg.disable(['meta/*']);
+      expect(reg.all().map((c) => c.name).toList()..sort(),
+          equals(['file.read', 'web.search.query']));
+      reg.disable(['*']);
+      expect(reg.all(), isEmpty);
+    });
+  });
 }
 
 class _ListProvider implements ToolProvider {

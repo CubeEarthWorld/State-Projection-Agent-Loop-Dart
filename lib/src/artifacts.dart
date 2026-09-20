@@ -25,25 +25,13 @@ import 'serialization.dart';
 
 const String refKey = r'$artifact';
 
-String serializeValue(Object? value) {
-  if (value is String) return value;
-  try {
-    return const JsonEncoder().convert(_jsonSafe(value));
-  } catch (_) {
-    return value.toString();
-  }
-}
+/// An artifact id, as `newId('artifact')` builds one. Ids arrive from the
+/// model (`meta.artifact.peek`, every `$artifact` reference in tool
+/// arguments), so anything carrying a separator, a `..` or a drive letter
+/// must never reach the filesystem: it would address another run's data.
+final RegExp _safeId = RegExp(r'^[A-Za-z0-9_-]{1,128}$');
 
-Object? _jsonSafe(Object? obj) {
-  if (obj == null || obj is num || obj is bool || obj is String) return obj;
-  if (obj is Map) {
-    return obj.map((k, v) => MapEntry(k.toString(), _jsonSafe(v)));
-  }
-  if (obj is Iterable) {
-    return obj.map(_jsonSafe).toList();
-  }
-  return obj.toString();
-}
+String serializeValue(Object? value) => value is String ? value : dumps(value);
 
 bool isRef(Object? value) =>
     value is Map && value.length == 1 && value[refKey] is String;
@@ -157,28 +145,40 @@ class ArtifactStore {
     return record;
   }
 
-  String _file(String dir, String aid) =>
-      joinPath(joinPath(dir, runId), '$aid.json');
+  /// The file this id maps to, or null when it is not a plain artifact id.
+  /// The single choke point every disk access routes through, which is what
+  /// keeps the run namespace a real boundary rather than a naming
+  /// convention.
+  String? _file(String aid) {
+    final dir = directory;
+    if (dir == null || !_safeId.hasMatch(aid)) return null;
+    return joinPath(joinPath(dir, runId), '$aid.json');
+  }
 
   void _persist(ArtifactRecord record) {
-    final dir = directory;
-    if (dir == null) return;
+    final path = _file(record.id);
+    if (path == null) return;
     requireFileSystem('Artifact persistence')
-        .writeString(_file(dir, record.id), dumps(record.toPayload()));
+        .writeString(path, dumps(record.toPayload()));
   }
 
   /// The record, recovered from disk when an earlier process wrote it: a
   /// resumed run can still read a payload that was too large to keep in the
-  /// ledger body.
+  /// ledger body. Total: an unreadable or foreign file at that path is "no
+  /// such artifact", never an exception out of [exists].
   ArtifactRecord? _find(String aid) {
     final known = _records[aid];
-    final dir = directory;
-    if (known != null || dir == null) return known;
+    if (known != null) return known;
+    final path = _file(aid);
+    if (path == null) return null;
     final fs = requireFileSystem('Artifact persistence');
-    final path = _file(dir, aid);
-    if (!fs.exists(path)) return known;
-    final payload = (jsonDecode(fs.readString(path)) as Map).cast<String, Object?>();
-    return _records[aid] = ArtifactRecord.fromPayload(payload);
+    if (!fs.exists(path)) return null;
+    try {
+      final payload = (jsonDecode(fs.readString(path)) as Map).cast<String, Object?>();
+      return _records[aid] = ArtifactRecord.fromPayload(payload);
+    } catch (_) {
+      return null;
+    }
   }
 
   ArtifactRecord getRecord(String aid) {
@@ -199,11 +199,8 @@ class ArtifactStore {
       final tail = record.text.length > previewTokens * 6
           ? record.text.substring(record.text.length - previewTokens * 6)
           : record.text;
-      final reversed = String.fromCharCodes(tail.runes.toList().reversed);
-      final truncatedReversed = truncateToTokens(reversed, previewTokens);
-      final body =
-          String.fromCharCodes(truncatedReversed.runes.toList().reversed);
-      snippet = '…$body';
+      String rev(String s) => String.fromCharCodes(s.runes.toList().reversed);
+      snippet = '…${rev(truncateToTokens(rev(tail), previewTokens))}';
     } else {
       snippet = truncateToTokens(record.text, previewTokens);
       if (snippet.length < record.text.length) snippet += '…';
@@ -251,13 +248,10 @@ class ArtifactStore {
       final from = (start - 1).clamp(0, lines.length);
       final to = end.clamp(0, lines.length);
       final sel = from <= to ? lines.sublist(from, to) : <String>[];
-      final out = <String>[];
-      var idx = start < 1 ? 1 : start;
-      for (final line in sel) {
-        out.add('$idx: $line');
-        idx++;
-      }
-      return out.join('\n');
+      final firstNo = start < 1 ? 1 : start;
+      return [
+        for (var i = 0; i < sel.length; i++) '${firstNo + i}: ${sel[i]}',
+      ].join('\n');
     }
     Object? value = record.value;
     try {
@@ -294,14 +288,10 @@ class ArtifactStore {
     }
     final out = <String>[];
     final shown = <int>{};
+    final last = lines.length - 1;
     for (final i in hits.take(40)) {
-      for (var j = (i - 1).clamp(0, lines.length - 1);
-          j <= (i + 1).clamp(0, lines.length - 1);
-          j++) {
-        if (!shown.contains(j)) {
-          shown.add(j);
-          out.add('${j + 1}: ${lines[j]}');
-        }
+      for (var j = (i - 1).clamp(0, last); j <= (i + 1).clamp(0, last); j++) {
+        if (shown.add(j)) out.add('${j + 1}: ${lines[j]}');
       }
     }
     return out.join('\n');

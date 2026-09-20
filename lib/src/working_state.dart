@@ -72,7 +72,7 @@ class WorkingState {
   final Map<String, Object?> extra;
   ChecklistStore checklists;
   // Ledger sequence up to which history has been folded into this state by
-  // compaction; those events render at summary fidelity afterwards.
+  // compaction; only the user's own words of those events render afterwards.
   int foldedSequence;
   // Ledger sequence from which history renders verbatim. Everything older is
   // tiered by its distance from this point, and the point moves only in
@@ -80,16 +80,17 @@ class WorkingState {
   // byte-identical between steps and a provider's prompt cache keeps hitting.
   int verbatimSequence;
 
+  /// Empty when every field but the two sequence numbers is. Derived from
+  /// [toDict] so the field list lives in one place; `checklists` is asked
+  /// directly because its dict form is never empty.
   bool isEmpty() =>
-      goal.isEmpty &&
-      acceptanceCriteria.isEmpty &&
-      constraints.isEmpty &&
-      confirmedFacts.isEmpty &&
-      decisions.isEmpty &&
-      openQuestions.isEmpty &&
-      nextActions.isEmpty &&
-      artifactRefs.isEmpty &&
-      extra.isEmpty && checklists.isEmpty;
+      checklists.isEmpty &&
+      toDict().entries.every((e) => switch (e.value) {
+            String v => v.isEmpty,
+            List v => v.isEmpty,
+            Map v => e.key == 'checklists' || v.isEmpty,
+            _ => true, // foldedSequence / verbatimSequence: never counted
+          });
 
   Map<String, Object?> toDict() => {
         'goal': goal,
@@ -150,17 +151,7 @@ class WorkingState {
 
 /// The typed fields of [WorkingState], i.e. the keys `fromDict` understands.
 /// Anything else a caller seeds is app-specific state and belongs in `extra`.
-const Set<String> workingStateFields = {
-  'goal',
-  'acceptance_criteria',
-  'constraints',
-  'confirmed_facts',
-  'decisions',
-  'open_questions',
-  'next_actions',
-  'artifact_refs',
-  'extra',
-  'checklists',
-  'folded_sequence',
-  'verbatim_sequence',
-};
+///
+/// Derived from `toDict` rather than spelled out again: a hand-kept copy that
+/// drifts silently mis-routes a seeded key into `extra`.
+final Set<String> workingStateFields = WorkingState().toDict().keys.toSet();

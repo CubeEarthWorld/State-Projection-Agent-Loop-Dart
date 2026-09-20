@@ -5,9 +5,7 @@ library;
 import '../capability.dart';
 import '../run.dart' show Question;
 
-Question _ask(ToolContext ctx, Map<String, Object?> args) => Question(
-      args['question'] as String,
-      choices: (args['choices'] as List?)?.cast<String>(),
-    );
+Question _ask(ToolContext ctx, Map<String, Object?> args) =>
+    Question(args.str('question'), choices: args.strsOrNull('choices'));
 
 const Map<String, CtxHandler> askHandlers = {'meta.user.ask': _ask};

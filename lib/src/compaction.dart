@@ -4,8 +4,8 @@
 /// The model returns a JSON delta; only the delta's *shape* is trusted (it is
 /// validated with the same schema validator as tool arguments), and the
 /// pre-fold working state is written to the ledger so a bad fold is
-/// recoverable by `rewind`. Folded events keep living in the ledger and
-/// render at `summary` fidelity afterwards.
+/// recoverable by `rewind`. Folded events keep living in the ledger; the
+/// projection renders only the user's own words of them afterwards.
 library;
 
 import 'dart:convert';
@@ -14,26 +14,25 @@ import 'compression.dart' show ungrounded;
 import 'json_schema.dart';
 import 'working_state.dart';
 
+const Map<String, Object?> _item = {'type': 'string', 'maxLength': 500};
+
 const Map<String, Object?> foldSchema = {
   'type': 'object',
   'properties': {
-    'facts_add': {'type': 'array', 'items': {'type': 'string', 'maxLength': 500}, 'maxItems': 20},
+    'facts_add': {'type': 'array', 'items': _item, 'maxItems': 20},
     'decisions_add': {
       'type': 'array',
       'items': {
         'type': 'object',
-        'properties': {
-          'text': {'type': 'string', 'maxLength': 500},
-          'reason': {'type': 'string', 'maxLength': 500},
-        },
+        'properties': {'text': _item, 'reason': _item},
         'required': ['text'],
         'additionalProperties': false,
       },
       'maxItems': 20,
     },
-    'questions_add': {'type': 'array', 'items': {'type': 'string', 'maxLength': 500}, 'maxItems': 20},
-    'questions_resolve': {'type': 'array', 'items': {'type': 'string', 'maxLength': 500}, 'maxItems': 20},
-    'next_actions': {'type': 'array', 'items': {'type': 'string', 'maxLength': 500}, 'maxItems': 20},
+    'questions_add': {'type': 'array', 'items': _item, 'maxItems': 20},
+    'questions_resolve': {'type': 'array', 'items': _item, 'maxItems': 20},
+    'next_actions': {'type': 'array', 'items': _item, 'maxItems': 20},
   },
   'additionalProperties': false,
 };
@@ -60,7 +59,6 @@ Map<String, Object?>? parseFoldReply(String text) {
   }
 }
 
-/// Validate and merge a fold delta. Returns an error message, or null.
 /// Validate and merge a fold delta. Returns an error message, or null.
 ///
 /// With a [transcript], entries carrying identifiers it never mentions are
@@ -101,7 +99,7 @@ String? applyFoldDelta(WorkingState ws, Map<String, Object?> delta, {String tran
   }
   ws.openQuestions = [for (final q in ws.openQuestions) if (!resolve.contains(q)) q];
   if (delta.containsKey('next_actions')) {
-    ws.nextActions = ((delta['next_actions'] as List?) ?? []).cast<String>();
+    ws.nextActions = (delta['next_actions'] as List).cast<String>();
   }
   return null;
 }

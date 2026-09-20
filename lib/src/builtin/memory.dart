@@ -5,14 +5,12 @@ import '../capability.dart';
 import '../session.dart';
 
 Object? _save(ToolContext ctx, Map<String, Object?> args) {
-  final note = (ctx.session as Session)
-      .memory
-      .save(args['text'] as String, ((args['tags'] as List?) ?? const []).cast<String>());
+  final note = (ctx.session as Session).memory.save(args.str('text'), args.strs('tags'));
   return 'saved note ${note.id}';
 }
 
 Object? _search(ToolContext ctx, Map<String, Object?> args) {
-  final notes = (ctx.session as Session).memory.search(args['query'] as String, (args['k'] as num?)?.toInt() ?? 5);
+  final notes = (ctx.session as Session).memory.search(args.str('query'), args.intOr('k', 5));
   if (notes.isEmpty) return 'No notes matched.';
   return [
     for (final n in notes)

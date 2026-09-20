@@ -9,25 +9,26 @@ library;
 
 import 'serialization.dart';
 
-bool _typeOk(String expected, Object? value) {
-  switch (expected) {
-    case 'string':
-      return value is String;
-    case 'integer':
-      return value is int && value is! bool;
-    case 'number':
-      return value is num && value is! bool;
-    case 'boolean':
-      return value is bool;
-    case 'array':
-      return value is List;
-    case 'object':
-      return value is Map;
-    case 'null':
-      return value == null;
-    default:
-      return true;
-  }
+/// One name -> predicate table serving both directions: "does this value
+/// have this JSON type" and "what is this value's JSON type name". Order
+/// matters for the second: the first match wins, so `true` names itself
+/// "boolean" and `1` "integer".
+final Map<String, bool Function(Object?)> _jsonTypes = {
+  'null': (v) => v == null,
+  'boolean': (v) => v is bool,
+  'integer': (v) => v is int,
+  'number': (v) => v is num,
+  'string': (v) => v is String,
+  'array': (v) => v is List,
+  'object': (v) => v is Map,
+};
+
+/// An unknown (or non-string) type keyword passes: a malformed capability
+/// spec degrades to "unvalidated", exactly as it does in Python, rather
+/// than taking the run down.
+bool _typeOk(Object? expected, Object? value) {
+  final ok = _jsonTypes[expected];
+  return ok == null || ok(value);
 }
 
 /// Name a value's type in the JSON Schema vocabulary.
@@ -36,39 +37,58 @@ bool _typeOk(String expected, Object? value) {
 /// names types the way the schema beside it does — and identically in the
 /// Python package, which would otherwise say "str" where this said "String".
 String jsonTypeName(Object? value) {
-  if (value == null) return 'null';
-  if (value is bool) return 'boolean';
-  if (value is int) return 'integer';
-  if (value is double) return 'number';
-  if (value is String) return 'string';
-  if (value is List) return 'array';
-  if (value is Map) return 'object';
+  for (final entry in _jsonTypes.entries) {
+    if (entry.value(value)) return entry.key;
+  }
   return value.runtimeType.toString();
+}
+
+/// Python's `in` compares with `==`, which is structural for lists and
+/// dicts — and, a documented wart of the reference port, treats `True` as
+/// equal to `1` and `False` as `0`. Dart's `==` is identity for `List` and
+/// `Map`, so an object or array `enum` member would never match.
+bool _jsonEquals(Object? a, Object? b) {
+  if (a is List && b is List) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!_jsonEquals(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (a is Map && b is Map) {
+    return a.length == b.length &&
+        a.keys.every((k) => b.containsKey(k) && _jsonEquals(a[k], b[k]));
+  }
+  return (a is bool ? (a ? 1 : 0) : a) == (b is bool ? (b ? 1 : 0) : b);
 }
 
 /// Minimal JSON Schema subset validator (the only validator in this port —
 /// mirrors Python's `_mini_validate` fallback, used unconditionally).
+///
+/// Every keyword is read defensively rather than cast: a capability spec is
+/// data, sometimes hand-written or model-written, and a malformed one must
+/// degrade to "this keyword did not apply" — as it does in Python — instead
+/// of throwing a `TypeError` out of the middle of a run.
 String? validateValue(Map<String, Object?> schema, Object? value, [String path = '']) {
   final where = path.isEmpty ? 'arguments' : path;
   final t = schema['type'];
   if (t != null) {
-    final types = t is List ? t.cast<String>() : [t as String];
+    final types = t is List ? t : [t];
     if (!types.any((x) => _typeOk(x, value))) {
       return '$where: expected type ${dumps(t)}, got ${jsonTypeName(value)}';
     }
   }
-  if (schema.containsKey('enum')) {
-    final enumValues = schema['enum'] as List;
-    if (!enumValues.contains(value)) {
-      return '$where: ${dumps(value)} is not one of ${dumps(enumValues)}';
-    }
+  final enumValues = schema['enum'];
+  if (enumValues is List && !enumValues.any((e) => _jsonEquals(e, value))) {
+    return '$where: ${dumps(value)} is not one of ${dumps(enumValues)}';
   }
-  if (value is num && value is! bool) {
-    if (schema.containsKey('minimum') && value < (schema['minimum'] as num)) {
-      return '$where: $value is less than minimum ${schema['minimum']}';
+  if (value is num) {
+    final min = schema['minimum'], max = schema['maximum'];
+    if (min is num && value < min) {
+      return '$where: $value is less than minimum $min';
     }
-    if (schema.containsKey('maximum') && value > (schema['maximum'] as num)) {
-      return '$where: $value is greater than maximum ${schema['maximum']}';
+    if (max is num && value > max) {
+      return '$where: $value is greater than maximum $max';
     }
   }
   if (value is String) {
@@ -76,21 +96,28 @@ String? validateValue(Map<String, Object?> schema, Object? value, [String path =
     // own limits in characters, and a schema that disagreed would reject
     // text the store would have accepted.
     final length = value.runes.length;
-    if (schema.containsKey('minLength') && length < (schema['minLength'] as num)) {
-      return '$where: shorter than minLength ${schema['minLength']}';
+    final min = schema['minLength'], max = schema['maxLength'];
+    if (min is num && length < min) {
+      return '$where: shorter than minLength $min';
     }
-    if (schema.containsKey('maxLength') && length > (schema['maxLength'] as num)) {
-      return '$where: longer than maxLength ${schema['maxLength']}';
+    if (max is num && length > max) {
+      return '$where: longer than maxLength $max';
     }
   }
   if (value is Map) {
     final valueMap = value.cast<String, Object?>();
-    for (final req in (schema['required'] as List? ?? [])) {
+    final required = schema['required'];
+    // A `String` here iterates its characters, as Python's `for req in ...`
+    // does, so the two ports report the same missing property.
+    for (final req in required is List
+        ? required
+        : (required is String ? required.split('') : const [])) {
       if (!valueMap.containsKey(req)) {
         return '$where: missing required property ${dumps(req)}';
       }
     }
-    final props = (schema['properties'] as Map?)?.cast<String, Object?>() ?? {};
+    final rawProps = schema['properties'];
+    final props = rawProps is Map ? rawProps.cast<String, Object?>() : const <String, Object?>{};
     for (final entry in props.entries) {
       if (valueMap.containsKey(entry.key) && entry.value is Map) {
         final err = validateValue(
@@ -115,20 +142,18 @@ String? validateValue(Map<String, Object?> schema, Object? value, [String path =
       if (err != null) return err;
     }
   }
-  if (schema.containsKey('anyOf')) {
+  final anyOf = schema['anyOf'];
+  if (anyOf is List) {
+    // The last check in the function, so a match returns straight away -
+    // the same shape as the reference port's for/else.
     final errs = <String>[];
-    var matched = false;
-    for (final sub in (schema['anyOf'] as List)) {
-      final err = validateValue((sub as Map).cast<String, Object?>(), value, where);
-      if (err == null) {
-        matched = true;
-        break;
-      }
+    for (final sub in anyOf) {
+      if (sub is! Map) continue;
+      final err = validateValue(sub.cast<String, Object?>(), value, where);
+      if (err == null) return null;
       errs.add(err);
     }
-    if (!matched) {
-      return '$where: no anyOf branch matched (${errs.join('; ')})';
-    }
+    return '$where: no anyOf branch matched (${errs.join('; ')})';
   }
   return null;
 }
@@ -136,7 +161,8 @@ String? validateValue(Map<String, Object?> schema, Object? value, [String path =
 /// Fill missing top-level arguments that declare a schema default.
 Map<String, Object?> applyDefaults(Map<String, Object?> schema, Map<String, Object?> args) {
   final out = Map<String, Object?>.from(args);
-  final props = (schema['properties'] as Map?)?.cast<String, Object?>() ?? {};
+  final rawProps = schema['properties'];
+  final props = rawProps is Map ? rawProps.cast<String, Object?>() : const <String, Object?>{};
   for (final entry in props.entries) {
     if (!out.containsKey(entry.key) && entry.value is Map) {
       final sub = (entry.value as Map).cast<String, Object?>();

@@ -110,6 +110,23 @@ void main() {
     });
   });
 
+  group('Questions', () {
+    test('a second question while one is pending is refused', () {
+      // Two concurrent read-only calls can both ask; the second used to
+      // overwrite the first, losing it without a trace.
+      final run = makeRun();
+      final first = run.newCommand('demo.ask', {}, 'pure');
+      final second = run.newCommand('demo.ask', {}, 'pure');
+      run.askQuestion(first, 'call_1', Question('which one?'));
+      expect(
+        () => run.askQuestion(second, 'call_2', Question('and this one?')),
+        throwsA(isA<RunStateError>()
+            .having((e) => e.toString(), 'message', contains('already waiting'))),
+      );
+      expect(run.pendingQuestion!.commandId, equals(first.id));
+    });
+  });
+
   group('SnapshotRoundTrip', () {
     test('round trip preserves pending state', () {
       final run = makeRun();

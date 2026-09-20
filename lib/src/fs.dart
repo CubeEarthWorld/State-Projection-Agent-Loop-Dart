@@ -53,9 +53,6 @@ abstract interface class FileSystem {
 /// The platform filesystem, or `null` where there is none (web).
 final FileSystem? fileSystem = platform.createFileSystem();
 
-/// Whether file-backed persistence can be used on this platform.
-bool get hasFileSystem => fileSystem != null;
-
 /// The filesystem, or a clear explanation instead of a `NoSuchMethodError`
 /// three frames deep.
 FileSystem requireFileSystem(String feature) {

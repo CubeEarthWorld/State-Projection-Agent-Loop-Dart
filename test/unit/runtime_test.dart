@@ -359,6 +359,67 @@ void main() {
       expect(run.state, equals('WAITING_FOR_APPROVAL'));
       expect(run.pendingCalls.map((c) => c.name).toList(), equals(['demo.risky', 'demo.after']));
     });
+
+    test('a resolved approval is never applied to a later pause', () async {
+      // The host approves but starts a new turn instead of resuming. The
+      // stale approval used to re-run its already-approved external command
+      // under the next pause's first call.
+      final ran = <String>[];
+      final reg = Registry();
+      reg.register(capabilityDict('demo.send', effects: [('external', '*')]),
+          handler: (Map<String, Object?> args) {
+        ran.add('send');
+        return 'sent';
+      });
+      reg.register(capabilityDict('demo.ask', effects: [('write', '*')]),
+          handler: (Map<String, Object?> args) => Question('which one?'));
+      reg.register(capabilityDict('demo.after'), handler: (Map<String, Object?> args) => 'after');
+      final (runtime, turn, ctx, run, policy) = makeRuntime(reg, allowAll: false);
+
+      await runBatch(runtime, [ToolCall(name: 'demo.send', arguments: {})], turn, ctx, run, policy);
+      run.resolveApproval('approved', currentPolicyRevision: policy.revision);
+      expect(ran, isEmpty);
+
+      final allow = PolicyEngine(defaultDecision: 'allow');
+      await runBatch(
+          runtime,
+          [ToolCall(name: 'demo.ask', arguments: {}), ToolCall(name: 'demo.after', arguments: {})],
+          turn, ctx, run, allow);
+      expect(run.state, equals('WAITING_FOR_USER'));
+      run.answer('this one');
+
+      final batch = await runtime.resumePending(run, ctx, allow);
+      expect(ran, isEmpty, reason: 'the approved external command must not fire here');
+      expect(batch.results.map((r) => r.call.name).toList(), equals(['demo.after']));
+    });
+  });
+
+  group('Questions', () {
+    test('a read-only question halts the batch like a sequential one', () async {
+      // A parked run must not keep executing: the concurrent read-only
+      // branch skipped the waiting_user check the sequential branch has.
+      final ran = <String>[];
+      final reg = Registry();
+      reg.register(capabilityDict('demo.ask'),
+          handler: (Map<String, Object?> args) => Question('which one?'));
+      reg.register(capabilityDict('demo.write', effects: [('write', '*')]),
+          handler: (Map<String, Object?> args) {
+        ran.add('write');
+        return 'written';
+      });
+      final (runtime, turn, ctx, run, policy) = makeRuntime(reg);
+
+      final calls = [
+        ToolCall(name: 'demo.ask', arguments: {}),
+        ToolCall(name: 'demo.write', arguments: {}),
+      ];
+      final batch = await runBatch(runtime, calls, turn, ctx, run, policy);
+
+      expect(run.state, equals('WAITING_FOR_USER'));
+      expect(batch.halted, isTrue);
+      expect(ran, isEmpty);
+      expect(run.pendingCalls.map((c) => c.name).toList(), equals(['demo.write']));
+    });
   });
 
   group('OutputPolicy', () {

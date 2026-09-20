@@ -149,4 +149,41 @@ void main() {
       expect(decision.decision, equals('require_approval'));
     });
   });
+
+  group('AutoPresetsCoverStateReads', () {
+    // The state.* preset rule named effectKind "write", so the one state
+    // capability that declares a READ — `state.extra.get` — matched
+    // nothing and fell through to require_approval, while every state
+    // WRITE was auto-allowed.
+    Capability stateCap(String kind) => Capability(
+        name: kind == 'read' ? 'state.extra.get' : 'state.extra.set',
+        effects: [Effect(kind: kind, resource: 'working_state:extra')]);
+
+    test('reads and writes are both allowed', () {
+      for (final preset in ['auto_safe', 'auto_workspace_dev']) {
+        for (final kind in ['read', 'write']) {
+          final engine = PolicyEngine();
+          engine.applyPreset(preset);
+          final decision = engine.evaluate(stateCap(kind), {});
+          expect(decision.decision, equals('allow'), reason: '$preset/$kind');
+          expect(decision.reason, equals('preset:local_working_state'));
+        }
+      }
+    });
+  });
+
+  group('GlobDialect', () {
+    // Pinned against Python's fnmatch; these two shapes are not in the
+    // shared fixtures.
+    test('question mark matches one code point not one utf16 unit', () {
+      expect(globMatch('\u{1F38C}', '?'), isTrue);
+      expect(globMatch('ab', '?'), isFalse);
+    });
+
+    test('an empty range declines instead of throwing', () {
+      expect(globMatch('a', '[z-a]'), isFalse);
+      expect(globMatch('a', '[!z-a]'), isTrue);
+      expect(globMatch('ab', '[!z-a]'), isFalse);
+    });
+  });
 }

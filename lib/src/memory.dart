@@ -48,8 +48,13 @@ class JsonlMemoryStore implements MemoryStore {
     final target = path;
     if (target == null) return;
     for (final line in requireFileSystem('Persistent memory').readLines(target)) {
-      if (line.trim().isNotEmpty) {
+      if (line.trim().isEmpty) continue;
+      try {
         _notes.add(Note.fromDict((jsonDecode(line) as Map).cast<String, Object?>()));
+      } catch (_) {
+        // Appends are unbuffered: a crash mid-append leaves a torn last
+        // line. Skipping it beats failing every later Session() construction.
+        continue;
       }
     }
   }

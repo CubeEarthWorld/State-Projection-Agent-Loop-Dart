@@ -127,10 +127,8 @@ class ApprovalRequest {
         resolution: d['resolution'] as String?,
       );
 
-  bool isExpired({double? now}) {
-    final t = now ?? DateTime.now().millisecondsSinceEpoch / 1000.0;
-    return expiresAt != null && t >= expiresAt!;
-  }
+  bool isExpired() =>
+      expiresAt != null && nowSeconds() >= expiresAt!;
 }
 
 /// What a handler returns to pause the run until the user answers
@@ -179,7 +177,8 @@ class PendingQuestion {
       );
 }
 
-double _nowSeconds() => DateTime.now().millisecondsSinceEpoch / 1000.0;
+/// Wall clock in seconds, the unit every persisted timestamp uses.
+double nowSeconds() => DateTime.now().millisecondsSinceEpoch / 1000.0;
 
 /// The state machine for one execution. Every transition and approval event
 /// is written to the ledger *before* [state] is updated, so a crash between
@@ -275,7 +274,7 @@ class Run {
     required int policyRevision,
     double? expiresInS,
   }) {
-    final expiresAt = expiresInS != null ? _nowSeconds() + expiresInS : null;
+    final expiresAt = expiresInS != null ? nowSeconds() + expiresInS : null;
     final request = ApprovalRequest(
       id: newId('approval'),
       commandId: command.id,
@@ -334,7 +333,14 @@ class Run {
   // -- questions ------------------------------------------------------------
 
   /// Park the run on a question the model asked the user (the `ask` pack).
+  /// One at a time: concurrently executed read-only calls can both ask, and
+  /// overwriting the first would lose it without a trace.
   PendingQuestion askQuestion(Command command, String callId, Question question) {
+    final waiting = pendingQuestion;
+    if (waiting != null) {
+      throw RunStateError('Run $id is already waiting on question ${waiting.id}; '
+          'answer it before asking another');
+    }
     final pending = PendingQuestion(
       id: newId('question'),
       commandId: command.id,

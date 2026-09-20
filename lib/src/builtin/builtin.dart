@@ -52,8 +52,16 @@ void install(Registry registry, List<Object?> definitions, Map<String, Function>
   for (final def in definitions) {
     final map = (def as Map).cast<String, Object?>();
     final name = map['name'] as String;
-    if (!registry.contains(name)) {
-      registry.register(map, handler: handlers[name], wantsCtx: wantsCtx, replace: true);
+    // hasDefinition, not contains: `get()` hides a *disabled* capability,
+    // so a developer's own definition that happens to be switched off
+    // would otherwise look unregistered and be replaced.
+    if (registry.hasDefinition(name)) continue;
+    final handler = handlers[name];
+    if (handler == null) {
+      // Python raises KeyError here. Registering a handler-less definition
+      // instead would ship a tool that only fails when the model calls it.
+      throw ArgumentError('No handler for builtin capability "$name"');
     }
+    registry.register(map, handler: handler, wantsCtx: wantsCtx, replace: true);
   }
 }

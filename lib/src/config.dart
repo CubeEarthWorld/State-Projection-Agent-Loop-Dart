@@ -4,6 +4,8 @@
 /// additively.
 library;
 
+import 'serialization.dart' show deepCopy;
+
 class ProjectionConfig {
   ProjectionConfig({
     List<String>? sections,
@@ -353,6 +355,12 @@ class Config {
       setter(sub.value);
     }
   }
+
+  /// A deep, independent copy. The `deepCopy` is load-bearing: [fromDict]
+  /// stores `.cast()` views over the map and lists it is handed, so a plain
+  /// `fromDict(toDict())` would still alias this config's `sections`,
+  /// `querySources` and `resultSchema`.
+  Config clone() => Config.fromDict(deepCopy(toDict()));
 
   Map<String, Object?> toDict() => {
         'mode': mode,

@@ -209,4 +209,56 @@ void main() {
 
     test('empty string', () => expect(contentHash('').length, equals(16)));
   });
+
+  // One case per fixed bug; the Python package carries the same set.
+  group('regressions', () {
+    final noise = [for (var i = 0; i < 30; i++) 'line $i'].join('\n');
+
+    test('an HTTP status is not an error', () {
+      // "status: 2" of "status: 200" used to match the exit-code pattern, so
+      // a tool reporting an HTTP status was never compressed again.
+      expect(maskObservation('HTTP status: 200 OK\n$noise'),
+          equals('HTTP status: 200 OK  [31 lines, 249 chars]'));
+    });
+
+    test('a clock time is not a stack frame', () {
+      expect(maskObservation('Meeting at 14:30 with Bob\n$noise'),
+          startsWith('Meeting at 14:30 with Bob  ['));
+    });
+
+    test('a real failure still takes the error path', () {
+      for (final report in ['exit code 1', 'exit status: 2', 'returncode=127', '  at foo.js:12']) {
+        expect(maskObservation('$report\n$noise', maxLines: 10), contains('line 29'), reason: report);
+      }
+      expect(maskObservation('exit code 0\n$noise'), startsWith('exit code 0  ['));
+    });
+
+    test('truncation never lengthens the text', () {
+      final text = '${[for (var i = 0; i < 41; i++) 'a'].join('\n')}\n'; // 41 one-char lines
+      expect(headTailTruncate(text, 40), equals(text));
+    });
+
+    test('output never has more lines than the limit', () {
+      final text = [for (var i = 0; i < 20; i++) '${'y' * 40}\n'].join();
+      expect(splitLinesKeepEnds(headTailTruncate(text, 2)).length, lessThanOrEqualTo(2));
+    });
+
+    test('noise stripping handles CRLF', () {
+      expect(stripNoise('diff --git a/f b/f\r\nindex 111..222 100644\r\nrest\r\n'), equals('rest\r\n'));
+    });
+
+    test('the fallback first line keeps its terminator', () {
+      expect(compressText('diff --git a/x b/x\n'), equals('diff --git a/x b/x\n'));
+    });
+
+    test('a lone carriage return separates lines', () {
+      expect(firstMeaningfulLine('#x\ry'), equals('y'));
+    });
+
+    test('every Python line break splits', () {
+      final text = [for (var i = 0; i < 20; i++) 'x' * 20].join('\v');
+      expect(headTailTruncate(text, 4),
+          equals('${'x' * 20}\v${'x' * 20}\v  [... 17 lines omitted ...]\n${'x' * 20}'));
+    });
+  });
 }

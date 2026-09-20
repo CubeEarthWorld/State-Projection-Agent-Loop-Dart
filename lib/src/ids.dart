@@ -15,6 +15,8 @@ import 'dart:math';
 const String _crockford32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 final Random _random = Random.secure();
 
+final BigInt _mask80 = (BigInt.one << 80) - BigInt.one;
+
 int _lastMs = 0;
 BigInt _lastRandom = BigInt.zero;
 
@@ -37,20 +39,12 @@ String _encode(BigInt value, int length) {
 /// platform computes exactly.
 const int _chunkBits = 24;
 
-int _pow2(int n) {
-  var value = 1;
-  for (var i = 0; i < n; i++) {
-    value *= 2;
-  }
-  return value;
-}
-
 BigInt _randomBits(int bits) {
   var value = BigInt.zero;
   var remaining = bits;
   while (remaining > 0) {
     final take = remaining >= _chunkBits ? _chunkBits : remaining;
-    final chunk = _random.nextInt(_pow2(take));
+    final chunk = _random.nextInt(1 << take); // exact everywhere for take <= _chunkBits
     value = (value << take) | BigInt.from(chunk);
     remaining -= take;
   }
@@ -64,19 +58,14 @@ BigInt _randomBits(int bits) {
 /// back still sort in call order.
 String newUlid() {
   var ms = DateTime.now().millisecondsSinceEpoch;
-  BigInt randomPart;
   if (ms <= _lastMs) {
     ms = _lastMs;
     _lastRandom += BigInt.one;
-    randomPart = _lastRandom;
   } else {
-    randomPart = _randomBits(80);
-    _lastRandom = randomPart;
+    _lastRandom = _randomBits(80);
   }
   _lastMs = ms;
-  final mask = (BigInt.one << 80) - BigInt.one;
-  randomPart = randomPart & mask;
-  return _encode(BigInt.from(ms), 10) + _encode(randomPart, 16);
+  return _encode(BigInt.from(ms), 10) + _encode(_lastRandom & _mask80, 16);
 }
 
 const Map<String, String> _prefixes = {
@@ -100,4 +89,3 @@ String newId(String kind) {
   }
   return '${prefix}_${newUlid()}';
 }
-
