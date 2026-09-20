@@ -269,6 +269,28 @@ class Runtime {
     );
   }
 
+  /// The same cap, applied inside one batch.
+  ///
+  /// [_loopGuard] keys off results, so it cannot see repeats that have not
+  /// finished yet — and read-only calls are buffered and run concurrently,
+  /// so a model can pack N identical calls into one turn and every one of
+  /// them runs. Writes never hit this: they take the sequential path, where
+  /// each result is remembered before the next starts. Only the count is
+  /// checked here; with identical arguments in a single batch there is no
+  /// later result that could differ.
+  ToolResult? _batchGuard(ToolCall call, Capability capability, String argsHash,
+      Map<(String, String), int> seen) {
+    final limit = config.limits.maxRepeats;
+    if (limit <= 0 || (seen[(capability.name, argsHash)] ?? 0) < limit) return null;
+    return ToolResult(
+      call: call,
+      outcome: 'failed',
+      error: 'loop_guard',
+      observation: 'Loop guard: "${capability.name}" appears $limit times with these exact '
+          'arguments in one batch. Ask for it once, or vary the arguments.',
+    );
+  }
+
   void _remember(Capability capability, String argsHash, ToolResult result) {
     if (waitingOutcomes.contains(result.outcome)) return;
     final tag = result.ok
@@ -303,6 +325,7 @@ class Runtime {
   ) async {
     final results = <ToolResult>[];
     final buffer = <(ToolCall, Capability, Map<String, Object?>, String)>[];
+    final inBatch = <(String, String), int>{};
     // A batch supersedes any approval resolved before it: pendingCalls is
     // about to belong to this batch, and a leftover request would send
     // resumePending looking for the wrong call's command.
@@ -339,7 +362,14 @@ class Runtime {
       }
       final (capability, args) = pre as (Capability, Map<String, Object?>);
       final argsHash = _argsHash(args);
-      final tripped = _loopGuard(call, capability, argsHash);
+      var tripped = _loopGuard(call, capability, argsHash);
+      if (tripped == null) {
+        tripped = _batchGuard(call, capability, argsHash, inBatch);
+        if (tripped == null) {
+          final key = (capability.name, argsHash);
+          inBatch[key] = (inBatch[key] ?? 0) + 1;
+        }
+      }
       if (tripped != null) {
         if (await flush(idx)) return ExecuteBatchResult(results: results, halted: true);
         results.add(tripped);

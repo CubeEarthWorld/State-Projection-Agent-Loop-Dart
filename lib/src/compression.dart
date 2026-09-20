@@ -186,13 +186,39 @@ final RegExp _punctuation = RegExp(r'[./:_-]');
 /// Identifier-like tokens of [entry] (paths, ids, numbers, names with digits
 /// or punctuation) that never occur in [transcript]: the parts a summary
 /// could only have invented.
+bool _isAlnum(int? unit) {
+  if (unit == null) return false;
+  return (unit >= 0x30 && unit <= 0x39) ||
+      (unit >= 0x41 && unit <= 0x5A) ||
+      (unit >= 0x61 && unit <= 0x7A);
+}
+
+/// Whether [token] occurs in [haystack] on its own, rather than buried
+/// inside a longer run of letters and digits.
+///
+/// A plain `contains` grounds an invented "order 942" on an unrelated
+/// "commit 8942", which is exactly the fabrication the caller is trying to
+/// catch. Punctuation still counts as a boundary, so "src/main.py" is
+/// grounded by "a/src/main.py:42".
+bool _grounded(String haystack, String token) {
+  var start = haystack.indexOf(token);
+  while (start >= 0) {
+    final end = start + token.length;
+    final before = start == 0 ? null : haystack.codeUnitAt(start - 1);
+    final after = end < haystack.length ? haystack.codeUnitAt(end) : null;
+    if (!_isAlnum(before) && !_isAlnum(after)) return true;
+    start = haystack.indexOf(token, start + 1);
+  }
+  return false;
+}
+
 List<String> ungrounded(String entry, String transcript) {
   final haystack = transcript.toLowerCase();
   return [
     for (final match in _identifier.allMatches(entry))
       if (match[0]!.length >= 3 &&
           (_digit.hasMatch(match[0]!) || _punctuation.hasMatch(match[0]!)) &&
-          !haystack.contains(match[0]!.toLowerCase()))
+          !_grounded(haystack, match[0]!.toLowerCase()))
         match[0]!,
   ];
 }

@@ -23,7 +23,14 @@ class _IoFileSystem implements FileSystem {
   @override
   List<String> readLines(String path) {
     final file = File(path);
-    return file.existsSync() ? file.readAsLinesSync() : const <String>[];
+    if (!file.existsSync()) return const <String>[];
+    // `readAsLinesSync` throws on malformed UTF-8. Appends are unbuffered,
+    // so a crash mid-append can truncate the last line inside a multi-byte
+    // character — and then a whole run becomes unreadable over one torn
+    // line. Decoding permissively leaves that line as garbage for the
+    // caller's own parse to reject and skip.
+    return const LineSplitter()
+        .convert(utf8.decode(file.readAsBytesSync(), allowMalformed: true));
   }
 
   @override
