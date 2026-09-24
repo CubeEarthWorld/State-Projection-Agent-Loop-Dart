@@ -87,9 +87,17 @@ class TurnContext extends ToolContext {
     super.emit,
     List<ScoredTool>? candidates,
     List<Map<String, Object?>>? apiTools,
+    List<String>? toolRecency,
   })  : candidates = candidates ?? <ScoredTool>[],
-        apiTools = apiTools ?? <Map<String, Object?>>[];
+        apiTools = apiTools ?? <Map<String, Object?>>[],
+        toolRecency = toolRecency ?? <String>[];
 
   final List<ScoredTool> candidates;
   List<Map<String, Object?>> apiTools;
+
+  /// The api names of the non-pinned native schemas, least recently used or
+  /// offered first: the order the window budget gives them back in. The
+  /// order of [apiTools] itself is the order they were first sent, which
+  /// says nothing about which one matters least now.
+  List<String> toolRecency;
 }

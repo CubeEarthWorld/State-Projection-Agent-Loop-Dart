@@ -153,15 +153,18 @@ class Session {
           (restored.state['budget'] as Map?)?.cast<String, Object?>() ?? {});
     }
 
-    // Recently used non-pinned tools (an LRU). Pinned capabilities are added
-    // by _apiTools straight from the registry, so they are never tracked here
-    // and can never be evicted.
-    _active = LinkedHashSet<String>();
+    // The non-pinned tools whose schemas go out natively, in the order each
+    // was first sent, and the same names least recently used or offered
+    // first. Pinned capabilities are added by _apiTools straight from the
+    // registry, so they are never tracked here and can never be evicted. Part
+    // of the snapshot: the tools array is the front of most providers' cached
+    // prefix, so a resumed run must send the same one.
     if (restored == null) {
       this.ledger.append(
           run.id, 'run_state_changed', {'from': 'RUNNING', 'to': 'RUNNING', 'reason': 'created'});
       _snapshot();
     } else {
+      _restoreTools(restored.state['tools']);
       _reattachBackground();
     }
   }
@@ -195,7 +198,8 @@ class Session {
   late WorkingState workingState;
   ChecklistStore get checklists => workingState.checklists;
   late BudgetState budget;
-  late final LinkedHashSet<String> _active;
+  List<String> _native = [];
+  LinkedHashSet<String> _recency = LinkedHashSet<String>();
   bool _interrupted = false;
 
   /// This run's sub-agents, until they are collected. A blocking spawn adds
@@ -441,11 +445,21 @@ class Session {
       policy: policy,
     );
     newSession.workingState = WorkingState.fromDict(deepCopy(workingState.toDict()));
+    newSession._native = List.of(_native);
+    newSession._recency = LinkedHashSet.of(_recency);
+    // The first `cut` messages, and the checkpoints among them so the branch
+    // can be rewound like any other run.
     final events = [for (final (event, _) in renderable(ledger, run.id)) event];
     final cut = atMessage ?? events.length;
-    for (final event in events.take(cut)) {
-      newSession.ledger.append(newSession.run.id, event.type, Map.of(event.data));
-    }
+    final kept = cut.clamp(0, events.length);
+    final stop = kept < events.length ? events[kept].sequence : null;
+    final moved = newSession._copyEvents([
+      for (final event in ledger.iterRun(run.id))
+        if ((stop == null || event.sequence < stop) &&
+            (renderableTypes.contains(event.type) || event.type == 'checkpoint'))
+          event,
+    ]);
+    _carryBoundaries(newSession.workingState, moved, newSession._nextSequence());
     newSession.ledger.append(newSession.run.id, 'branch_created', {
       'parent_run_id': run.id,
       'parent_session_id': sessionId,
@@ -529,6 +543,7 @@ class Session {
     final state = <String, Object?>{
       'working_state': workingState.toDict(),
       'budget': budget.toDict(),
+      'tools': _toolsState(),
       ...run.toSnapshotState(),
     };
     ledger.saveSnapshot(Snapshot(
@@ -732,12 +747,14 @@ class Session {
   (TurnContext, List<Message>) _project() {
     _stepTiers();
     final ctx = _context();
+    final tools = _apiTools(ctx);
     final messages = projection.render(
       ctx,
-      apiTools: _apiTools(ctx),
+      apiTools: tools,
       reservedTokens:
           config.projection.reservedOutputTokens + config.projection.providerOverheadTokens,
     );
+    _settleTools(ctx, tools);
     return (ctx, messages);
   }
 
@@ -876,12 +893,30 @@ class Session {
     return '';
   }
 
+  /// The native schemas for this step: pinned ones in registry order, then
+  /// every other native tool in the order it was first sent, then `finish`
+  /// in job mode.
+  ///
+  /// Most providers render the tools array ahead of the whole conversation,
+  /// so it is the front of the cached prefix: a list that changes changes
+  /// everything after it. Nothing here reorders it — not this step's
+  /// candidate ranking (that is the candidates section's job, at the tail),
+  /// not recency. A candidate offered for the first time is appended and
+  /// then stays, so it is callable natively as before, and a step whose
+  /// candidates were all offered already sends the same bytes as the step
+  /// before. The list shrinks only when it outgrows `discovery.activeTools`
+  /// (one deliberate rebuild) or the window forces it.
   List<Map<String, Object?>> _apiTools(TurnContext ctx) {
-    // Ordered and deduplicated: pinned, then candidates, then the LRU.
+    final offered = [for (final scored in ctx.candidates) scored.tool.name];
+    offered.forEach(_activate);
+    _evict(offered.toSet());
+    ctx.toolRecency = [
+      for (final name in _recency)
+        if (registry.get(name) case final capability?) capability.apiName,
+    ];
     final names = <String>{
       for (final capability in registry.pinned()) capability.name,
-      for (final scored in ctx.candidates) scored.tool.name,
-      ..._active,
+      ..._native,
     };
     return [
       for (final n in names)
@@ -890,16 +925,59 @@ class Session {
     ];
   }
 
-  void _activate(String name) {
-    _active.remove(name);
-    _active.add(name);
-    while (_active.length > config.discovery.activeTools) {
-      _active.remove(_active.first);
+  /// Forget the native tools the window made this step leave out, so the
+  /// next step appends them again instead of re-inserting them mid-list. A
+  /// tool left out because it is disabled for now keeps its place and
+  /// returns there when it is enabled again.
+  void _settleTools(TurnContext ctx, List<Map<String, Object?>> sent) {
+    final names = {for (final t in ctx.apiTools) t['name']};
+    for (final tool in sent) {
+      if (names.contains(tool['name'])) continue;
+      final name = registry.resolveApiName('${tool['name'] ?? ''}');
+      if (_recency.remove(name)) _native.remove(name);
     }
   }
 
-  /// Mark tools recently used so their schemas are sent natively next turn.
+  void _activate(String name) {
+    if (registry.get(name)?.discovery.pinned ?? false) return; // always sent, never tracked
+    if (!_recency.remove(name)) _native.add(name);
+    _recency.add(name);
+  }
+
+  /// Hold the native tools other than this step's candidates to
+  /// `discovery.activeTools`, dropping the least recently used or offered.
+  void _evict(Set<String> keep) {
+    var over = _native.where((n) => !keep.contains(n)).length - config.discovery.activeTools;
+    for (final name in [for (final n in _recency) if (!keep.contains(n)) n]) {
+      if (over-- <= 0) break;
+      _recency.remove(name);
+      _native.remove(name);
+    }
+  }
+
+  /// Mark tools used so their schemas are sent natively from the next step
+  /// on. A tool not yet in the native list joins it at the end.
   void activate(Iterable<String> names) => names.forEach(_activate);
+
+  /// The non-pinned tools whose schemas are sent natively, in the order they
+  /// appear in the tools array (first sent first).
+  List<String> get nativeTools => List.unmodifiable(_native);
+
+  Map<String, Object?> _toolsState() => {'native': List.of(_native), 'recency': List.of(_recency)};
+
+  void _restoreTools(Object? state) {
+    final map = state is Map ? state : const {};
+    _native = [for (final n in (map['native'] as List? ?? const [])) '$n'];
+    final order = [
+      for (final n in (map['recency'] as List? ?? const []))
+        if (_native.contains('$n')) '$n',
+    ];
+    _recency = LinkedHashSet.of([
+      for (final n in _native)
+        if (!order.contains(n)) n,
+      ...order,
+    ]);
+  }
 
   Object? _handleTextOnly(Decision decision) {
     if (config.mode == 'chat') return decision.text;
@@ -919,13 +997,21 @@ class Session {
   }
 
   void _checkpoint() {
-    ledger.append(run.id, 'checkpoint', {'working_state': workingState.toDict()});
+    ledger.append(run.id, 'checkpoint', {
+      'working_state': workingState.toDict(),
+      'tools': _toolsState(),
+    });
   }
 
   /// Destructive rewind: cancel the current run and replace it in-place with
   /// a new run containing only events up to [toTurn] (counted in user-input
   /// turns, 0-indexed). The session continues as if everything after that
   /// turn never happened.
+  ///
+  /// The working state and the native tool list are restored from the
+  /// checkpoint at the rewind point. The kept events (checkpoints included)
+  /// are renumbered in the new run, and the restored history boundaries are
+  /// re-pointed at them, so the kept history renders exactly as it did before.
   ///
   /// Returns a list of irreversible external effects that already executed
   /// and cannot be undone.
@@ -938,21 +1024,20 @@ class Session {
     // renderable events to keep, and the working state from the checkpoint
     // written right after it.
     final irreversible = <String>[];
-    final keptRenderable = <Event>[];
-    var restoredWs = WorkingState();
+    final kept = <Event>[]; // the renderable events, and the checkpoints among them
+    var checkpoint = const <String, Object?>{}; // the one written right after the toTurn-th input
     var userCount = 0;
     var cut = false;
     for (final event in ledger.iterRun(run.id)) {
       if (!cut && event.type == 'user_input' && userCount++ == toTurn) cut = true;
       if (!cut) {
-        if (renderableTypes.contains(event.type)) {
-          keptRenderable.add(event);
+        if (renderableTypes.contains(event.type) || event.type == 'checkpoint') {
+          kept.add(event);
         } else if (_effectNotice(event) case final effect?) {
           irreversible.add(effect);
         }
       } else if (event.type == 'checkpoint') {
-        restoredWs = WorkingState.fromDict(
-            (event.data['working_state'] as Map?)?.cast<String, Object?>() ?? {});
+        checkpoint = event.data;
         break;
       }
     }
@@ -962,25 +1047,80 @@ class Session {
     }
 
     final oldRunId = run.id;
-    ledger.append(oldRunId, 'rewound', {'to_turn': toTurn, 'kept_messages': keptRenderable.length});
+    ledger.append(oldRunId, 'rewound', {
+      'to_turn': toTurn,
+      'kept_messages': kept.where((e) => renderableTypes.contains(e.type)).length,
+    });
     if (!terminalStates.contains(run.state)) {
       cancel('rewound to turn $toTurn');
     }
 
     run = Run(newId('run'), sessionId, ledger);
-    for (final event in keptRenderable) {
-      ledger.append(run.id, event.type, Map.of(event.data));
-    }
-    ledger.append(run.id, 'checkpoint', {'working_state': restoredWs.toDict()});
-
+    // The kept checkpoints come along too, so this run can be rewound again
+    // to any turn it still has.
+    final moved = _copyEvents(kept);
+    final restoredWs = WorkingState.fromDict(
+        (checkpoint['working_state'] as Map?)?.cast<String, Object?>() ?? {});
+    _carryBoundaries(restoredWs, moved, _nextSequence());
     workingState = restoredWs;
+    // The native tools go back to what they were when that turn began; a
+    // checkpoint written without them (an older one) starts empty.
+    _restoreTools(checkpoint['tools']);
+    _checkpoint();
+
     budget = BudgetState();
     _idleTurns = 0;
     _budgetGraceUsed = false;
-    _active.clear();
     runtime.reset();
     _snapshot();
 
     return irreversible;
   }
+
+  /// Append [events] to the current run, in order, and return each one's
+  /// `(old, new)` sequence. The copies are numbered afresh, so a checkpoint
+  /// copied along has its history boundaries re-pointed at them.
+  List<(int, int)> _copyEvents(List<Event> events) {
+    final moved = <(int, int)>[];
+    for (final event in events) {
+      final data = Map<String, Object?>.of(event.data);
+      final state = data['working_state'];
+      if (event.type == 'checkpoint' && state is Map) {
+        final ws = WorkingState.fromDict(state.cast<String, Object?>());
+        _carryBoundaries(ws, moved, _nextSequence());
+        data['working_state'] = {
+          ...state.cast<String, Object?>(),
+          'verbatim_sequence': ws.verbatimSequence,
+          'folded_sequence': ws.foldedSequence,
+        };
+      }
+      moved.add((event.sequence, ledger.append(run.id, event.type, data).sequence));
+    }
+    return moved;
+  }
+
+  int _nextSequence() => ledger.lastSequence(run.id) + 1;
+}
+
+/// Re-point [state]'s history boundaries after its events were copied into
+/// another run under new sequence numbers ([moved]: `(old, new)` pairs,
+/// oldest first). The verbatim point moves to the first copy at or after it
+/// ([nextSequence] when none is, so every copy stays older), and the fold
+/// point to the last copy at or before it. Left as they were, the old run's
+/// numbers mean different messages in the new run: a verbatim point past the
+/// copies compressed the whole kept history.
+void _carryBoundaries(WorkingState state, List<(int, int)> moved, int nextSequence) {
+  var verbatim = nextSequence;
+  for (final (old, copy) in moved) {
+    if (old >= state.verbatimSequence) {
+      verbatim = copy;
+      break;
+    }
+  }
+  var folded = 0;
+  for (final (old, copy) in moved) {
+    if (old <= state.foldedSequence) folded = copy;
+  }
+  state.verbatimSequence = verbatim;
+  state.foldedSequence = folded;
 }

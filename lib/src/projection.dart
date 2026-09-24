@@ -396,19 +396,25 @@ class Projection {
 
   /// Last resort: drop the least recently used non-pinned native schema.
   ///
-  /// `apiTools` is ordered pinned, candidates, then the recently-used LRU
-  /// oldest first; candidates remove their own schemas when they shrink, so
-  /// the first droppable entry here is the least recently used tool. Pinned
-  /// schemas and `finish` are never dropped.
+  /// `apiTools` is in the order the tools were first sent (see
+  /// `Session._apiTools`), which says nothing about which one matters least
+  /// now; `ctx.toolRecency` does, least recently used or offered first.
+  /// Absent from it, the first droppable entry goes. Pinned schemas and
+  /// `finish` are never dropped.
   static bool _dropSchema(TurnContext ctx) {
     final keep = {for (final c in ctx.registry.pinned()) c.apiName, finishName};
+    final rank = {for (var r = 0; r < ctx.toolRecency.length; r++) ctx.toolRecency[r]: r};
+    int? victim;
     for (var i = 0; i < ctx.apiTools.length; i++) {
-      if (!keep.contains(ctx.apiTools[i]['name'])) {
-        ctx.apiTools.removeAt(i);
-        return true;
+      if (keep.contains(ctx.apiTools[i]['name'])) continue;
+      if (victim == null ||
+          (rank[ctx.apiTools[i]['name']] ?? -1) < (rank[ctx.apiTools[victim]['name']] ?? -1)) {
+        victim = i;
       }
     }
-    return false;
+    if (victim == null) return false;
+    ctx.apiTools.removeAt(victim);
+    return true;
   }
 
   /// Render all sections and enforce the window budget.

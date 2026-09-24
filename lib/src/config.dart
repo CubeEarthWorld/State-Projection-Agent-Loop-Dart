@@ -56,7 +56,10 @@ class DiscoveryConfig {
   String vector;
   int k;
   bool toc;
-  // Recently used non-pinned tools whose native schemas are re-sent each turn.
+  // Non-pinned tools, besides this step's candidates, whose native schemas
+  // stay in the tools array (used, found or offered before). The array
+  // keeps first-sent order; past this many, the least recently used or
+  // offered one leaves it.
   int activeTools;
   List<String> querySources;
 
