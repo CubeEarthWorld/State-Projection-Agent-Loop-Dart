@@ -63,8 +63,7 @@ Object? _searchHistory(ToolContext ctx, Map<String, Object?> args) {
   for (final event in ledger.iterRun(run.id)) {
     final blob = event.data.toString();
     if (blob.toLowerCase().contains(q)) {
-      final preview = blob.length > 300 ? blob.substring(0, 300) : blob;
-      hits.add('[${event.sequence}] ${event.type}: $preview');
+      hits.add('[${event.sequence}] ${event.type}: $blob');
       if (hits.length >= k) break;
     }
   }
